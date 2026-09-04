@@ -342,7 +342,12 @@ class WorldSession
         void ProcessPackets(PacketFilter& updater);
         bool AllowPacket(uint16 opcode);
         void ClearIncomingPacketsByType(PacketProcessing type);
-        inline bool HasRecentPacket(PacketProcessing type) const { return m_receivedPacketType[type]; }
+        inline bool ConsumeRecentPacket(PacketProcessing type)
+        {
+            bool const received = m_receivedPacketType[type];
+            m_receivedPacketType[type] = false;
+            return received;
+        }
 
         void StartSniffing()
         {
@@ -532,7 +537,16 @@ class WorldSession
         void HandleLootReleaseOpcode(WorldPackets::Loot::LootRelease const& packet);
         void HandleLootMasterGiveOpcode(WorldPackets::Loot::LootMasterGive const& packet);
         void HandleWhoOpcode(WorldPackets::Misc::Who const& packet);
-        void HandleLFGOpcode(NullClientPacket const& packet);
+        void HandleLFGOpcode(WorldPackets::Misc::LookingForGroupQuery const& packet);
+        void HandleSetLookingForGroupOpcode(WorldPackets::Misc::SetLookingForGroup const& packet);
+        uint32 GetLookingForGroupSlot(uint8 index) const
+        {
+            return index < 3 ? m_lookingForGroupSlots[index] : 0;
+        }
+        std::string const& GetLookingForGroupComment() const
+        {
+            return m_lookingForGroupComment;
+        }
         void HandleLogoutRequestOpcode(NullClientPacket const& packet);
         void HandlePlayerLogoutOpcode(NullClientPacket const& packet);
         void HandleLogoutCancelOpcode(NullClientPacket const& packet);
@@ -782,6 +796,7 @@ class WorldSession
         void HandleChannelAnnouncementsOpcode(WorldPackets::Channel::ChannelAnnouncements const& packet);
         void HandleChannelModerateOpcode(WorldPackets::Channel::ChannelModerate const& packet);
 
+        void HandleOpeningCinematic(NullClientPacket const& packet);
         void HandleCompleteCinematic(NullClientPacket const& packet);
         void HandleNextCinematicCamera(NullClientPacket const& packet);
 
@@ -863,6 +878,8 @@ class WorldSession
         bool m_connected;
         uint32 m_disconnectTimer;
         uint32 m_latency;
+        uint32 m_lookingForGroupSlots[3] = {};
+        std::string m_lookingForGroupComment;
 
         uint32 m_accountId;
         std::string m_username;
@@ -876,6 +893,8 @@ class WorldSession
         bool m_verifiedEmail;
         std::shared_ptr<PlayerBotEntry> m_bot;
         std::unique_ptr<SniffFile> m_sniffFile;
+        bool m_coworldReplaySniff = false;
+        void UpdateCoworldReplaySniff();
 
         Warden* m_warden;
         MovementAnticheat* m_cheatData;

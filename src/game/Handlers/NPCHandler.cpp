@@ -606,6 +606,75 @@ bool WorldSession::CheckStableMaster(ObjectGuid guid)
     return true;
 }
 
+namespace
+{
+    bool IsStoredHunterPet(CharacterPetCache const* petData)
+    {
+        if (!petData || petData->petType != HUNTER_PET || !petData->entry)
+            return false;
+        CreatureInfo const* creatureInfo = sObjectMgr.GetCreatureTemplate(petData->entry);
+        return creatureInfo && creatureInfo->IsTameable();
+    }
+
+    CharacterPetCache* GetStoredCurrentHunterPet(Player* player)
+    {
+        CharacterPetCache* petData =
+            sCharacterDatabaseCache.GetCharacterPetByOwner(player->GetGUIDLow());
+        return IsStoredHunterPet(petData) ? petData : nullptr;
+    }
+
+    uint32 FindFreeHunterStableSlot(Player* player)
+    {
+        bool usedSlots[PET_SAVE_LAST_STABLE_SLOT - PET_SAVE_FIRST_STABLE_SLOT + 1] = {false};
+        CharPetMap const& pets = sCharacterDatabaseCache.GetCharPetsMap();
+        CharPetMap::const_iterator ownerPets = pets.find(player->GetGUIDLow());
+        if (ownerPets != pets.end())
+        {
+            for (CharacterPetCache const* petData : ownerPets->second)
+            {
+                if (petData->slot >= PET_SAVE_FIRST_STABLE_SLOT &&
+                    petData->slot <= PET_SAVE_LAST_STABLE_SLOT)
+                    usedSlots[petData->slot - PET_SAVE_FIRST_STABLE_SLOT] = true;
+            }
+        }
+
+        uint32 slot = PET_SAVE_FIRST_STABLE_SLOT;
+        while (slot <= PET_SAVE_LAST_STABLE_SLOT &&
+               usedSlots[slot - PET_SAVE_FIRST_STABLE_SLOT])
+            ++slot;
+        return slot;
+    }
+
+    void SetStoredPetSlots(
+        CharacterPetCache* firstPet,
+        uint32 firstSlot,
+        CharacterPetCache* secondPet = nullptr,
+        uint32 secondSlot = PET_SAVE_NOT_IN_SLOT)
+    {
+        CharacterDatabase.BeginTransaction();
+
+        static SqlStatementID updateFirstPetSlot;
+        SqlStatement stmt = CharacterDatabase.CreateStatement(
+            updateFirstPetSlot,
+            "UPDATE `character_pet` SET `slot` = ? WHERE `owner_guid` = ? AND `id` = ?");
+        stmt.PExecute(firstSlot, firstPet->ownerGuid, firstPet->id);
+
+        if (secondPet)
+        {
+            static SqlStatementID updateSecondPetSlot;
+            stmt = CharacterDatabase.CreateStatement(
+                updateSecondPetSlot,
+                "UPDATE `character_pet` SET `slot` = ? WHERE `owner_guid` = ? AND `id` = ?");
+            stmt.PExecute(secondSlot, secondPet->ownerGuid, secondPet->id);
+        }
+
+        CharacterDatabase.CommitTransaction();
+        firstPet->slot = firstSlot;
+        if (secondPet)
+            secondPet->slot = secondSlot;
+    }
+}
+
 void WorldSession::HandleStablePet(WorldPackets::Npc::StablePet const& packet)
 {
     if (!GetPlayer()->IsAlive())
@@ -624,34 +693,37 @@ void WorldSession::HandleStablePet(WorldPackets::Npc::StablePet const& packet)
     GetPlayer()->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_INTERACTING_CANCELS);
 
     Pet* pet = _player->GetPet();
+    CharacterPetCache* storedPet = nullptr;
+    if (pet)
+    {
+        if (pet->GetPetType() != HUNTER_PET)
+        {
+            SendStableResult(STABLE_ERR_STABLE);
+            return;
+        }
+    }
+    else
+    {
+        storedPet = GetStoredCurrentHunterPet(_player);
+        if (!storedPet)
+        {
+            SendStableResult(STABLE_ERR_STABLE);
+            return;
+        }
+    }
 
-    // can't place in stable dead pet
-    if (!pet || !pet->IsAlive() || pet->GetPetType() != HUNTER_PET)
+    uint32 freeSlot = FindFreeHunterStableSlot(_player);
+    if (freeSlot > GetPlayer()->m_stableSlots)
     {
         SendStableResult(STABLE_ERR_STABLE);
         return;
     }
 
-    uint32 free_slot = PET_SAVE_FIRST_STABLE_SLOT;
-
-    // Find free slot for pet
-    bool usedSlots[PET_SAVE_LAST_STABLE_SLOT - PET_SAVE_FIRST_STABLE_SLOT + 1] = {false};
-    CharPetMap const& pets = sCharacterDatabaseCache.GetCharPetsMap();
-    CharPetMap::const_iterator myPets = pets.find(GetPlayer()->GetGUIDLow());
-    if (myPets != pets.end())
-        for (const auto it : myPets->second)
-            if (it->slot >= PET_SAVE_FIRST_STABLE_SLOT && it->slot <= PET_SAVE_LAST_STABLE_SLOT)
-                usedSlots[it->slot - PET_SAVE_FIRST_STABLE_SLOT] = true;
-
-    for (free_slot = PET_SAVE_FIRST_STABLE_SLOT; free_slot <= PET_SAVE_LAST_STABLE_SLOT && usedSlots[free_slot - PET_SAVE_FIRST_STABLE_SLOT]; ++free_slot);
-
-    if (free_slot <= GetPlayer()->m_stableSlots)
-    {
-        pet->Unsummon(PetSaveMode(free_slot), _player);
-        SendStableResult(STABLE_SUCCESS_STABLE);
-    }
+    if (pet)
+        pet->Unsummon(PetSaveMode(freeSlot), _player);
     else
-        SendStableResult(STABLE_ERR_STABLE);
+        SetStoredPetSlots(storedPet, freeSlot);
+    SendStableResult(STABLE_SUCCESS_STABLE);
 }
 
 void WorldSession::HandleUnstablePet(WorldPackets::Npc::UnstablePet const& packet)
@@ -665,39 +737,53 @@ void WorldSession::HandleUnstablePet(WorldPackets::Npc::UnstablePet const& packe
     GetPlayer()->InterruptSpellsWithChannelFlags(AURA_INTERRUPT_INTERACTING_CANCELS);
     GetPlayer()->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_INTERACTING_CANCELS);
 
-    CharacterPetCache const* petData = sCharacterDatabaseCache.GetCharacterPetCacheByOwnerAndId(_player->GetGUIDLow(), packet.petNumber);
-
-    if (!petData || petData->slot < PET_SAVE_FIRST_STABLE_SLOT || petData->slot > PET_SAVE_LAST_STABLE_SLOT)
+    if (_player->GetPet())
     {
         SendStableResult(STABLE_ERR_STABLE);
         return;
     }
 
-    uint32 creatureId = petData->entry;
-    CreatureInfo const* creatureInfo = sObjectMgr.GetCreatureTemplate(creatureId);
-    if (!creatureInfo || !creatureInfo->IsTameable())
+    CharacterPetCache* petData =
+        sCharacterDatabaseCache.GetCharacterPetCacheByOwnerAndId(
+            _player->GetGUIDLow(), packet.petNumber);
+    if (!IsStoredHunterPet(petData) ||
+        petData->slot < PET_SAVE_FIRST_STABLE_SLOT ||
+        petData->slot > PET_SAVE_LAST_STABLE_SLOT)
     {
         SendStableResult(STABLE_ERR_STABLE);
         return;
     }
 
-    // Player may have a pet, but unsummoned currently (too far away from owner ...). Do not erase this pet!
-    Pet* pet = _player->GetPet();
-    if (pet || sCharacterDatabaseCache.GetCharacterPetByOwner(_player->GetGUIDLow()))
+    CharacterPetCache* currentPet = GetStoredCurrentHunterPet(_player);
+    uint32 const stableSlot = petData->slot;
+    uint32 const currentSlot = currentPet ? currentPet->slot : PET_SAVE_NOT_IN_SLOT;
+    uint32 const newPetSlot =
+        petData->currentHealth == 0 ? PET_SAVE_NOT_IN_SLOT : PET_SAVE_AS_CURRENT;
+
+    if (currentPet)
+        SetStoredPetSlots(currentPet, stableSlot, petData, newPetSlot);
+    else
+        SetStoredPetSlots(petData, newPetSlot);
+
+    if (petData->currentHealth == 0)
     {
-        SendStableResult(STABLE_ERR_STABLE);
+        SendStableResult(STABLE_SUCCESS_UNSTABLE);
         return;
     }
 
     Pet* newpet = new Pet(HUNTER_PET);
-    if (!newpet->LoadPetFromDB(_player, creatureId, packet.petNumber))
+    if (!newpet->LoadPetFromDB(_player, petData->entry, packet.petNumber))
     {
         delete newpet;
-        newpet = nullptr;
+        if (currentPet)
+            SetStoredPetSlots(petData, stableSlot, currentPet, currentSlot);
+        else
+            SetStoredPetSlots(petData, stableSlot);
         SendStableResult(STABLE_ERR_STABLE);
         return;
     }
 
+    SendPetNameQuery(newpet->GetObjectGuid(), packet.petNumber);
     SendStableResult(STABLE_SUCCESS_UNSTABLE);
 }
 
@@ -743,49 +829,69 @@ void WorldSession::HandleStableSwapPet(WorldPackets::Npc::StableSwapPet const& p
     GetPlayer()->InterruptSpellsWithChannelFlags(AURA_INTERRUPT_INTERACTING_CANCELS);
     GetPlayer()->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_INTERACTING_CANCELS);
 
+    CharacterPetCache* swappedPet =
+        sCharacterDatabaseCache.GetCharacterPetCacheByOwnerAndId(
+            _player->GetGUIDLow(), packet.petNumber);
+    if (!IsStoredHunterPet(swappedPet) ||
+        swappedPet->slot < PET_SAVE_FIRST_STABLE_SLOT ||
+        swappedPet->slot > PET_SAVE_LAST_STABLE_SLOT)
+    {
+        SendStableResult(STABLE_ERR_STABLE);
+        return;
+    }
+
+    uint32 const stableSlot = swappedPet->slot;
+    CharacterPetCache* currentPetData = nullptr;
+    uint32 currentPetSlot = PET_SAVE_NOT_IN_SLOT;
     Pet* pet = _player->GetPet();
-
-    if (!pet || !pet->IsAlive() || pet->GetPetType() != HUNTER_PET)
+    if (pet)
     {
-        SendStableResult(STABLE_ERR_STABLE);
-        return;
-    }
-
-    // find swapped pet slot in stable
-    CharacterPetCache const* swappedPet = sCharacterDatabaseCache.GetCharacterPetCacheByOwnerAndId(_player->GetGUIDLow(), packet.petNumber);
-    if (!swappedPet)
-    {
-        SendStableResult(STABLE_ERR_STABLE);
-        return;
-    }
-
-    uint32 slot        = swappedPet->slot;
-    uint32 creature_id = swappedPet->entry;
-
-    if (!creature_id)
-    {
-        SendStableResult(STABLE_ERR_STABLE);
-        return;
-    }
-
-    CreatureInfo const* creatureInfo = sObjectMgr.GetCreatureTemplate(creature_id);
-    if (!creatureInfo || !creatureInfo->IsTameable())
-    {
-        SendStableResult(STABLE_ERR_STABLE);
-        return;
-    }
-
-    pet->Unsummon(PetSaveMode(slot), _player);
-
-    // summon unstabled pet
-    Pet* newpet = new Pet;
-    if (!newpet->LoadPetFromDB(_player, creature_id, packet.petNumber))
-    {
-        delete newpet;
-        SendStableResult(STABLE_ERR_STABLE);
+        if (pet->GetPetType() != HUNTER_PET)
+        {
+            SendStableResult(STABLE_ERR_STABLE);
+            return;
+        }
+        currentPetData = sCharacterDatabaseCache.GetCharacterPetCacheByOwnerAndId(
+            _player->GetGUIDLow(), pet->GetCharmInfo()->GetPetNumber());
+        if (currentPetData)
+            currentPetSlot = currentPetData->slot;
+        pet->Unsummon(PetSaveMode(stableSlot), _player);
     }
     else
+    {
+        currentPetData = GetStoredCurrentHunterPet(_player);
+        if (!currentPetData)
+        {
+            SendStableResult(STABLE_ERR_STABLE);
+            return;
+        }
+        currentPetSlot = currentPetData->slot;
+        uint32 const newPetSlot =
+            swappedPet->currentHealth == 0 ? PET_SAVE_NOT_IN_SLOT : PET_SAVE_AS_CURRENT;
+        SetStoredPetSlots(currentPetData, stableSlot, swappedPet, newPetSlot);
+    }
+
+    if (swappedPet->currentHealth == 0)
+    {
+        SetStoredPetSlots(swappedPet, PET_SAVE_NOT_IN_SLOT);
         SendStableResult(STABLE_SUCCESS_UNSTABLE);
+        return;
+    }
+
+    Pet* newpet = new Pet(HUNTER_PET);
+    if (!newpet->LoadPetFromDB(_player, swappedPet->entry, packet.petNumber))
+    {
+        delete newpet;
+        if (currentPetData)
+            SetStoredPetSlots(swappedPet, stableSlot, currentPetData, currentPetSlot);
+        else
+            SetStoredPetSlots(swappedPet, stableSlot);
+        SendStableResult(STABLE_ERR_STABLE);
+        return;
+    }
+
+    SendPetNameQuery(newpet->GetObjectGuid(), packet.petNumber);
+    SendStableResult(STABLE_SUCCESS_UNSTABLE);
 }
 
 void WorldSession::HandleRepairItemOpcode(WorldPackets::Npc::RepairItem const& packet)

@@ -2378,6 +2378,28 @@ void Creature::CastSpawnSpell()
 
 void Creature::Respawn()
 {
+    // Coworld dungeon editor: `.reload creature` can clear SPAWN_FLAG_DEAD
+    // for a gate-released clone after this object was instantiated. Keep
+    // the cached death-default bit aligned before the respawn state checks.
+    bool wasDeadByDefault = IsDeadByDefault();
+    CreatureData const* currentData = HasStaticDBSpawnData()
+        ? sObjectMgr.GetCreatureData(GetGUIDLow()) : m_creatureData;
+    if (currentData)
+    {
+        m_creatureData = currentData;
+        m_isDeadByDefault = (currentData->spawn_flags & SPAWN_FLAG_DEAD) != 0;
+    }
+
+    if (wasDeadByDefault && !IsDeadByDefault() && !IsAlive())
+    {
+        m_respawnTime = 0;
+        SetDeathState(JUST_ALIVED);
+        UnitVisibility currentVis = GetVisibility();
+        SetVisibility(VISIBILITY_RESPAWN);
+        SetVisibility(currentVis);
+        return;
+    }
+
     RemoveCorpse();
 
     // forced recreate creature object at clients

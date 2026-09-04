@@ -5817,9 +5817,25 @@ void Aura::PeriodicTick(SpellEntry const* sProto, AuraType auraType, uint32 data
             // Curse of Agony damage-per-tick calculation
             else if (spellProto->IsFitToFamily<SPELLFAMILY_WARLOCK, CF_WARLOCK_CURSE_OF_AGONY>())
                 fdamage += (-1 + ((int)GetAuraTicks() - 1) / 4) * (spellProto->CalculateSimpleValue(EFFECT_INDEX_0) / 2.0);
-            // Starshards damage-per-tick calculation
+            // Starshards damage tiers follow elapsed channel time. Pushback
+            // shortens the synchronized aura duration and skips periodic
+            // callbacks, so the delivered tick count alone falls behind.
             else if (spellProto->IsFitToFamily<SPELLFAMILY_PRIEST, CF_PRIEST_STARSHARDS>())
-                fdamage += (-1 + ((int)GetAuraTicks() - 1) / 2) * (spellProto->CalculateSimpleValue(EFFECT_INDEX_0) / 3.0);
+            {
+                uint32 damageTick = GetAuraTicks();
+                int32 const maxDuration = GetAuraMaxDuration();
+                int32 const duration = GetAuraDuration();
+                int32 const period = m_modifier.periodictime;
+                if (maxDuration > 0 && duration >= 0 && period > 0)
+                {
+                    uint32 const maxTicks = uint32(maxDuration / period);
+                    uint32 const remainingTicks = uint32((duration + period - 1) / period);
+                    if (maxTicks > remainingTicks)
+                        damageTick = maxTicks - remainingTicks;
+                }
+                damageTick = std::max<uint32>(1, damageTick);
+                fdamage += (-1 + (int(damageTick) - 1) / 2) * (spellProto->CalculateSimpleValue(EFFECT_INDEX_0) / 3.0);
+            }
 
             // SpellDamageBonus for magic spells
             if (spellProto->DmgClass == SPELL_DAMAGE_CLASS_NONE || spellProto->DmgClass == SPELL_DAMAGE_CLASS_MAGIC)
@@ -7024,54 +7040,28 @@ bool SpellAuraHolder::IsNeedVisibleSlot(Unit const* caster) const
 
     bool totemAura = caster && caster->GetTypeId() == TYPEID_UNIT && ((Creature*)caster)->IsTotem();
 
-    // Check for persistent area auras that only do damage. If it has a secondary effect, it takes
-    // up a slot
-    bool persistent = m_spellProto->Effect[EFFECT_INDEX_0] == SPELL_EFFECT_PERSISTENT_AREA_AURA;
-    bool persistentWithSecondaryEffect = false;
+    // Persistent areas are installed from a dynamic object before m_auras is
+    // populated. They still consume a harmful aura slot even when
+    // SPELL_ATTR_EX_NO_AURA_ICON makes the stock client hide the icon.
+    bool persistent =
+        m_spellProto->Effect[EFFECT_INDEX_0] == SPELL_EFFECT_PERSISTENT_AREA_AURA;
 
     for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
     {
-        // Check for persistent aura here since the effect aura is applied to the holder
-        // by a dynamic object as the target passes through the object field, meaning
-        // m_auras will be unset when this method is called (initialization)
         if (!m_auras[i] && !persistent)
             continue;
 
-        // special area auras cases
         switch (m_spellProto->Effect[i])
         {
             case SPELL_EFFECT_APPLY_AREA_AURA_PET:
             case SPELL_EFFECT_APPLY_AREA_AURA_PARTY:
                 // passive auras (except totem auras) do not get placed in caster slot
                 return (m_target != caster || totemAura || !m_isPassive) && m_auras[i]->GetModifier()->m_auraname != SPELL_AURA_NONE;
-
-                break;
             case SPELL_EFFECT_PERSISTENT_AREA_AURA:
-                // If spell aura applies something other than plain damage, it takes
-                // up a debuff slot.
-                if (m_spellProto->EffectApplyAuraName[i] != SPELL_AURA_PERIODIC_DAMAGE)
-                    persistentWithSecondaryEffect = true;
-
-                break;
+                return true;
             default:
                 break;
         }
-    }
-
-    /*  Persistent area auras such as Blizzard/RoF/Volley do not get require debuff slots
-        since they just do area damage with no additional effects. However, spells like
-        Hurricane do since they have a secondary effect attached to them. There are enough
-        persistent area spells in-game that making a switch for all of them is a bit
-        unreasonable. Any spell with a secondary affect should take up a slot. Note
-        that most (usable) persistent spells only deal damage.
-
-        It was considered whether spells with secondary effects should still deal damage,
-        even if there is no room for the other effect, however the debuff tooltip states
-        that the spell causes damage AND slows, therefore it must take a debuff slot.
-     */
-    if (persistent && !persistentWithSecondaryEffect)
-    {
-        return false;
     }
 
     // necessary for some spells, e.g. Immolate visual passive 28330

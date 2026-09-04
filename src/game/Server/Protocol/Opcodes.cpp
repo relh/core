@@ -327,7 +327,7 @@ Handlers BuildOpcodeList()
     DEFINE_HANDLER(CMSG_MOVE_HOVER_ACK,               STATUS_LOGGEDIN,  PACKET_PROCESS_MOVEMENT,      &WorldSession::HandleMovementFlagChangeToggleAck);
     INVALID_PACKET(MSG_MOVE_HOVER,                    UnhandleReason::Unhandled);
     INVALID_PACKET(CMSG_TRIGGER_CINEMATIC_CHEAT,      UnhandleReason::Unhandled);
-    INVALID_PACKET(CMSG_OPENING_CINEMATIC,            UnhandleReason::Unhandled);
+    DEFINE_HANDLER(CMSG_OPENING_CINEMATIC,            STATUS_LOGGEDIN,  PACKET_PROCESS_MAP,           &WorldSession::HandleOpeningCinematic);
     INVALID_PACKET(SMSG_TRIGGER_CINEMATIC,            UnhandleReason::SendByServer);
     DEFINE_HANDLER(CMSG_NEXT_CINEMATIC_CAMERA,        STATUS_LOGGEDIN,  PACKET_PROCESS_MAP,           &WorldSession::HandleNextCinematicCamera);
     DEFINE_HANDLER(CMSG_COMPLETE_CINEMATIC,           STATUS_LOGGEDIN,  PACKET_PROCESS_MAP,           &WorldSession::HandleCompleteCinematic);
@@ -600,7 +600,7 @@ Handlers BuildOpcodeList()
     INVALID_PACKET(CMSG_RWHOIS,                       UnhandleReason::Unhandled);
     INVALID_PACKET(SMSG_RWHOIS,                       UnhandleReason::SendByServer);
     DEFINE_HANDLER(MSG_LOOKING_FOR_GROUP,             STATUS_LOGGEDIN,  PACKET_PROCESS_WORLD,         &WorldSession::HandleLFGOpcode);
-    INVALID_PACKET(CMSG_SET_LOOKING_FOR_GROUP,        UnhandleReason::Unhandled);
+    DEFINE_HANDLER(CMSG_SET_LOOKING_FOR_GROUP,        STATUS_LOGGEDIN,  PACKET_PROCESS_WORLD,         &WorldSession::HandleSetLookingForGroupOpcode);
     INVALID_PACKET(CMSG_UNLEARN_SPELL,                UnhandleReason::Unhandled);
     DEFINE_HANDLER(CMSG_UNLEARN_SKILL,                STATUS_LOGGEDIN,  PACKET_PROCESS_MAP,           &WorldSession::HandleUnlearnSkillOpcode);
     INVALID_PACKET(SMSG_REMOVED_SPELL,                UnhandleReason::SendByServer);

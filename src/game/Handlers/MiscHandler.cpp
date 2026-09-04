@@ -274,11 +274,73 @@ void WorldSession::HandleWhoOpcode(WorldPackets::Misc::Who const& packet)
     sWorld.AddAsyncTask(std::move(task));
 }
 
-void WorldSession::HandleLFGOpcode(NullClientPacket const& /*packet*/)
+void WorldSession::HandleLFGOpcode(WorldPackets::Misc::LookingForGroupQuery const& packet)
 {
-    WorldPacket data(MSG_LOOKING_FOR_GROUP, 4);
-    data << uint32(0);
+#if SUPPORTED_CLIENT_BUILD >= CLIENT_BUILD_1_12_1
+    constexpr uint32 MaxListedPlayers = 50;
+    WorldPacket data(MSG_LOOKING_FOR_GROUP, 8);
+    data << uint32(0); // listed count placeholder
+    data << uint32(0); // total matching count placeholder
+
+    uint32 listedCount = 0;
+    uint32 totalCount = 0;
+    uint32 const queryType = packet.packedEntry & 0xFF000000;
+    uint32 queryEntry = packet.packedEntry & 0x00FFFFFF;
+    if (queryEntry == 0)
+        queryEntry = packet.queryValue & 0x00FFFFFF;
+
+    HashMapHolder<Player>::MapType& players = sObjectAccessor.GetPlayers();
+    for (auto const& itr : players)
+    {
+        Player* player = itr.second;
+        if (!player || !player->IsInWorld() || player->GetTeam() != GetPlayer()->GetTeam())
+            continue;
+
+        WorldSession* session = player->GetSession();
+        if (!session)
+            continue;
+
+        bool matches = queryType == 0 && queryEntry == 0;
+        for (uint8 slotIndex = 0; slotIndex < 3 && !matches; ++slotIndex)
+        {
+            uint32 const slot = session->GetLookingForGroupSlot(slotIndex);
+            if (slot == 0)
+                continue;
+            bool const typeMatches = queryType == 0 || (slot & 0xFF000000) == queryType;
+            bool const entryMatches = queryEntry == 0 || (slot & 0x00FFFFFF) == queryEntry;
+            matches = typeMatches && entryMatches;
+        }
+        if (!matches)
+            continue;
+
+        ++totalCount;
+        if (listedCount >= MaxListedPlayers)
+            continue;
+
+        data << player->GetName();
+        data << uint32(player->GetLevel());
+        data << uint32(player->GetZoneId());
+        for (uint8 slotIndex = 0; slotIndex < 3; ++slotIndex)
+            data << session->GetLookingForGroupSlot(slotIndex);
+        data << session->GetLookingForGroupComment();
+        ++listedCount;
+    }
+
+    data.put<uint32>(0, listedCount);
+    data.put<uint32>(4, totalCount);
     SendPacket(&data);
+#else
+    WorldPacket data(MSG_LOOKING_FOR_GROUP, 4);
+    data << uint32(m_lookingForGroupSlots[0] != 0);
+    SendPacket(&data);
+#endif
+}
+
+void WorldSession::HandleSetLookingForGroupOpcode(WorldPackets::Misc::SetLookingForGroup const& packet)
+{
+    for (uint8 slotIndex = 0; slotIndex < 3; ++slotIndex)
+        m_lookingForGroupSlots[slotIndex] = packet.slots[slotIndex];
+    m_lookingForGroupComment = packet.comment.substr(0, 127);
 }
 
 void WorldSession::HandleLogoutRequestOpcode(NullClientPacket const& /*packet*/)
@@ -308,6 +370,8 @@ void WorldSession::HandleLogoutRequestOpcode(NullClientPacket const& /*packet*/)
     // instant logout in taverns/cities or on taxi or for admins, gm's, mod's if its enabled in mangosd.conf
     if (GetPlayer()->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) ||
         GetPlayer()->IsTaxiFlying() ||
+        // Coworld: instant logout on the GM Island spell lab (map 1, zone 876).
+        (GetPlayer()->GetMapId() == 1 && GetPlayer()->GetZoneId() == 876) ||
         GetSecurity() >= (AccountTypes)sWorld.getConfig(CONFIG_UINT32_INSTANT_LOGOUT))
     {
         auto packet = std::make_unique<WorldPackets::Misc::LogoutResponse>();
@@ -908,6 +972,19 @@ void WorldSession::HandleSetActionButtonOpcode(WorldPackets::Misc::SetActionButt
         if (!Player::IsActionButtonDataValid(packet.button, action, type, GetPlayer()))
             return;
         GetMasterPlayer()->addActionButton(packet.button, action, type);
+    }
+}
+
+void WorldSession::HandleOpeningCinematic(NullClientPacket const& /*packet*/)
+{
+    Player* player = GetPlayer();
+    if (player->GetUInt32Value(PLAYER_XP) != 0)
+        return;
+
+    if (ChrRacesEntry const* raceEntry = sChrRacesStore.LookupEntry(player->GetRace()))
+    {
+        if (raceEntry->CinematicSequence)
+            player->SendCinematicStart(raceEntry->CinematicSequence);
     }
 }
 
