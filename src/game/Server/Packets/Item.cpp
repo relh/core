@@ -148,14 +148,14 @@ void WorldPackets::Item::ItemNameQueryResponse::AppendBodyTo(ByteBuffer& buffer)
 void WorldPackets::Item::ReadItemOk::AppendBodyTo(ByteBuffer& buffer) const
 {
     buffer << itemGuid;
-    buffer << itemGuid;
 }
 
 void WorldPackets::Item::ReadItemFailed::AppendBodyTo(ByteBuffer& buffer) const
 {
     buffer << itemGuid;
     buffer << reason;
-    buffer << itemGuid;
+    if (reason == 1)
+        buffer << translationDelayMs;
 }
 
 void WorldPackets::Item::ItemEnchantTimeUpdate::AppendBodyTo(ByteBuffer& buffer) const

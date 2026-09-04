@@ -22,6 +22,7 @@
 #include "ObjectGridLoader.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "SovereigntyMgr.h"
 #include "MapPersistentStateMgr.h"
 #include "Creature.h"
 #include "CreatureAI.h"
@@ -127,6 +128,8 @@ bool IsEnabledOnMap(Map* map, uint32 guid)
 template <>
 bool IsEnabledOnMap<GameObject>(Map* map, uint32 guid)
 {
+    if (!sSovereigntyMgr.ShouldLoadGameObject(guid))
+        return false;
     if (!map->IsContinent() || !map->GetInstanceId())
         return true;
     GameObjectData const* data = sObjectMgr.GetGOData(guid);

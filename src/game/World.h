@@ -630,8 +630,10 @@ enum RealmType
     REALM_TYPE_NORMAL2 = 4,
     REALM_TYPE_RP = 6,
     REALM_TYPE_RPPVP = 8,
-    REALM_TYPE_FFA_PVP = 16                                 // custom, free for all pvp mode like arena PvP in all zones except rest activated places and sanctuaries
-                                                            // replaced by REALM_PVP in realm list
+    REALM_TYPE_FFA_PVP = 16,                                // custom, free for all pvp mode like arena PvP in all zones except rest activated places and sanctuaries
+    REALM_TYPE_GUILD_WARS = 17,                             // custom, FFA except players with the same nonzero guild id
+    REALM_TYPE_GUILD_WARS_DRAIN = 18                        // custom, stock PvP while retiring Guild Wars groups
+                                                            // custom types are replaced by REALM_PVP in realm list
 };
 
 // Storage class for commands issued for delayed execution
@@ -712,6 +714,9 @@ class World
         uint8 GetWowPatch() const { return m_wowPatch; }
         char const* GetPatchName() const;
 
+        bool IsNpcBackstoriesEnabled() const { return m_npcBackstoriesEnabled; }
+        void SetNpcBackstoriesEnabled(bool enabled) { m_npcBackstoriesEnabled = enabled; }
+
         LocaleConstant GetDefaultDbcLocale() const { return m_defaultDbcLocale; }
 
         // Get the path where data (dbc, maps) are stored on disk
@@ -773,7 +778,7 @@ class World
         static void StopNow(uint8 exitcode) { m_stopEvent = true; m_ExitCode = exitcode; }
         static bool IsStopped() { return m_stopEvent; }
 
-        void Update(uint32 diff);
+        void Update(uint32 diff, uint32 operationalWallDiff);
 
         void UpdateSessions(uint32 diff);
 
@@ -798,8 +803,14 @@ class World
         bool getConfig(eConfigBoolValues index) const { return m_configBoolValues[index]; }
 
         // Are we on a "Player versus Player" server?
-        bool IsPvPRealm() const { return (getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_PVP || getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_RPPVP || getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_FFA_PVP); }
-        bool IsFFAPvPRealm() const { return getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_FFA_PVP; }
+        bool IsPvPRealm() const { return (getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_PVP || getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_RPPVP || IsFFAPvPRealm() || IsGuildWarsDrainRealm()); }
+        bool IsFFAPvPRealm() const { return getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_FFA_PVP || IsGuildWarsRealm(); }
+        bool IsGuildWarsRealm() const { return getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_GUILD_WARS; }
+        bool IsGuildWarsDrainRealm() const { return getConfig(CONFIG_UINT32_GAME_TYPE) == REALM_TYPE_GUILD_WARS_DRAIN; }
+        bool AreGuildWarAllies(uint32 firstGuildId, uint32 secondGuildId) const
+        {
+            return IsGuildWarsRealm() && firstGuildId != 0 && firstGuildId == secondGuildId;
+        }
 
         void KickAll();
         void KickAllLess(AccountTypes sec);
@@ -834,9 +845,6 @@ class World
 
         // Nostalrius
         MovementBroadcaster* GetBroadcaster() const { return m_broadcaster.get(); }
-        float GetTimeRate() const { return m_timeRate; }
-        void SetTimeRate(float rate) { m_timeRate = rate; }
-        float m_timeRate;
         void SetSessionDisconnected(WorldSession* sess);
 
         void SetAnticrashRearmTimer(uint32 value) { m_anticrashRearmTimer = value; }
@@ -884,6 +892,17 @@ class World
         static TimePoint GetCurrentClockTime() { return m_currentTime; }
         static uint32 GetCurrentDiff() { return m_currentDiff; }
 
+        uint32 GetSimulationTimeScale() const { return m_simulationTimeScale; }
+        void SetSimulationTimeScale(uint32 scale) { m_simulationTimeScale = scale; }
+        uint32 ScaleSimulationDuration(uint32 wallDuration) const
+        {
+            if (m_simulationTimeScale <= 1)
+                return wallDuration;
+            return wallDuration > 0xffffffffu / m_simulationTimeScale
+                ? 0xffffffffu
+                : wallDuration * m_simulationTimeScale;
+        }
+
         // Manually override timer update secs to force a faster update
         void SetWorldUpdateTimer(WorldTimers timer, uint32 current);
         time_t GetWorldUpdateTimer(WorldTimers timer);
@@ -921,11 +940,14 @@ class World
         static uint8 m_ExitCode;
         uint32 m_ShutdownTimer = 0;
         uint32 m_ShutdownMask = 0;
+        time_t m_shutdownWallTime = 0;
 
         uint32 m_MaintenanceTimeChecker = 0;
 
         time_t m_startTime;
         time_t m_gameTime;
+        bool m_npcBackstoriesEnabled = false;
+        uint32 m_simulationTimeScale = 1;
         uint32 m_gameDay;
         int32  m_timeZoneOffset;
         IntervalTimer m_timers[WUPDATE_COUNT];

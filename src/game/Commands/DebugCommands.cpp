@@ -2292,16 +2292,11 @@ bool ChatHandler::HandleDebugMonsterChatCommand(char* args)
     return true;
 }
 
-bool ChatHandler::HandleDebugTimeCommand(char* args)
+bool ChatHandler::HandleDebugTimeCommand(char* /*args*/)
 {
-    float rate = 1.0f;
-
-    if (ExtractFloat(&args, rate))
-        PSendSysMessage("Time rate: x %f", rate);
-    else
-        SendSysMessage("Time is back to normal.");
-
-    sWorld.SetTimeRate(rate);
+    PSendSysMessage(
+        "World simulation rate is configured at startup: x %u",
+        sWorld.GetSimulationTimeScale());
     return true;
 }
 

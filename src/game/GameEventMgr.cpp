@@ -45,7 +45,7 @@ bool GameEventMgr::CheckOneGameEvent(uint16 entry, time_t currenttime) const
 
 uint32 GameEventMgr::NextCheck(uint16 entry) const
 {
-    time_t currenttime = time(nullptr);
+    time_t currenttime = sWorld.GetGameTime();
 
     // outdated event: we return max
     if (currenttime > mGameEvent[entry].end)
@@ -90,7 +90,7 @@ void GameEventMgr::StartEvent(uint16 event_id, bool overwrite /*=false*/, bool r
 
     if (overwrite)
     {
-        mGameEvent[event_id].start = time(nullptr);
+        mGameEvent[event_id].start = sWorld.GetGameTime();
         if (mGameEvent[event_id].end <= mGameEvent[event_id].start)
             mGameEvent[event_id].end = mGameEvent[event_id].start + mGameEvent[event_id].length;
     }
@@ -106,7 +106,7 @@ void GameEventMgr::StopEvent(uint16 event_id, bool overwrite)
     UnApplyEvent(event_id);
     if (overwrite)
     {
-        mGameEvent[event_id].start = time(nullptr) - mGameEvent[event_id].length * MINUTE;
+        mGameEvent[event_id].start = sWorld.GetGameTime() - mGameEvent[event_id].length * MINUTE;
         if (mGameEvent[event_id].end <= mGameEvent[event_id].start)
             mGameEvent[event_id].end = mGameEvent[event_id].start + mGameEvent[event_id].length;
     }
@@ -708,7 +708,7 @@ void GameEventMgr::Initialize(MapPersistentState* state)
 uint32 GameEventMgr::Update(ActiveEvents const* activeAtShutdown /*= nullptr*/)
 {
     // process hardcoded events
-    time_t currenttime = time(nullptr);
+    time_t currenttime = sWorld.GetGameTime();
     uint32 nextEventDelay = max_ge_check_delay;             // 1 day
 
     for (const auto& hEvent_iter : mGameEventHardcodedList)

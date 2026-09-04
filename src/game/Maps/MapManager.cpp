@@ -306,7 +306,7 @@ void MapManager::Update(uint32 diff)
     asyncMapUpdating = true;
 
     int continentsIdx = 0;
-    uint32 now = WorldTimer::getMSTime();
+    uint32 now = sWorld.GetCurrentMSTime();
 
     uint32 inactiveTimeLimit = sWorld.getConfig(CONFIG_UINT32_EMPTY_MAPS_UPDATE_TIME);
     std::vector<std::function<void()>> continentsUpdaters;

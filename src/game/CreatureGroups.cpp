@@ -17,6 +17,7 @@
  */
 
 #include "Creature.h"
+#include "World.h"
 #include "CreatureGroups.h"
 #include "ObjectMgr.h"
 #include "CreatureAI.h"
@@ -188,7 +189,7 @@ void CreatureGroup::Respawn(Creature* member, CreatureGroupMember const* memberE
         return;
 
     m_respawnGuard = true;
-    if (member->IsInWorld() && member->GetRespawnTime() > time(nullptr))
+    if (member->IsInWorld() && member->GetRespawnTime() > sWorld.GetGameTime())
     {
         BattleGround* bg = member->GetMap()->IsBattleGround() ? ((BattleGroundMap*)member->GetMap())->GetBG() : nullptr;
         if (!bg || bg->CanBeSpawned(member))

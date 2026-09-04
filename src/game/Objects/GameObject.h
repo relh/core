@@ -98,22 +98,11 @@ class GameObject : public SpellCaster
         uint32 GetSpellId() const { return m_spellId;}
 
         time_t GetRespawnTime() const { return m_respawnTime; }
-        time_t GetRespawnTimeEx() const
-        {
-            time_t now = time(nullptr);
-            if (m_respawnTime > now)
-                return m_respawnTime;
-            else
-                return now;
-        }
+        time_t GetRespawnTimeEx() const;
 
         void Despawn();
         void JustDespawnedWaitingRespawn();
-        void SetRespawnTime(time_t respawn)
-        {
-            m_respawnTime = respawn > 0 ? time(nullptr) + respawn : 0;
-            m_respawnDelayTime = respawn > 0 ? uint32(respawn) : 0;
-        }
+        void SetRespawnTime(time_t respawn);
         void SetRespawnDelay(time_t respawn)
         {
             m_respawnDelayTime = respawn;

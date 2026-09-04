@@ -21,6 +21,7 @@
 
 #include "CreatureAI.h"
 #include "Creature.h"
+#include "World.h"
 #include "DBCStores.h"
 #include "Totem.h"
 #include "ObjectMgr.h"
@@ -363,7 +364,7 @@ bool CreatureAI::CanTriggerAlert(Unit const* who)
         return false;
 
     // 10 sec cooldown for stealth warning
-    if (WorldTimer::getMSTimeDiffToNow(m_uLastAlertTime) < 10000)
+    if (WorldTimer::getMSTimeDiff(m_uLastAlertTime, sWorld.GetCurrentMSTime()) < 10000)
         return false;
 
     // only alert if target is within line of sight
@@ -382,5 +383,5 @@ void CreatureAI::TriggerAlertDirect(Unit const* who)
     m_creature->StopMoving();
     m_creature->SetFacingTo(m_creature->GetAngle(who->GetPositionX(), who->GetPositionY()));
     m_creature->GetMotionMaster()->MoveDistract(5 * IN_MILLISECONDS);
-    m_uLastAlertTime = WorldTimer::getMSTime();
+    m_uLastAlertTime = sWorld.GetCurrentMSTime();
 }

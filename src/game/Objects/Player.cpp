@@ -24,6 +24,10 @@
 #include <sstream>
 
 #include "Player.h"
+
+// Coworld schema-3 Godview player /say event bridge.
+void CoworldRecordChatEvent(Player const* speaker, char const* message);
+#include "ClassDeckMgr.h"
 #include "Bag.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"
@@ -40,6 +44,7 @@
 #include "Channel.h"
 #include "ChannelMgr.h"
 #include "MapManager.h"
+#include "MarketStallMgr.h"
 #include "MapPersistentStateMgr.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -64,6 +69,7 @@
 #include "SpellModifier.h"
 #include "ScriptMgr.h"
 #include "SocialMgr.h"
+#include "SovereigntyMgr.h"
 #include "TradeData.h"
 #include "Mail.h"
 #include "WaypointMovementGenerator.h"
@@ -202,7 +208,7 @@ Player::Player(WorldSession* session) : Unit(),
         j.invitedToInstance = 0;
     }
 
-    m_loginTime = time(nullptr);
+    m_loginTime = sWorld.GetGameTime();
     m_createTime = m_loginTime;
     m_lastTick = m_loginTime;
     m_weaponProficiency = 0;
@@ -498,7 +504,7 @@ bool Player::Create(uint32 guidlow, std::string const& name, uint8 race, uint8 c
     SetUInt32Value(PLAYER_FIELD_COINAGE, sWorld.getConfig(CONFIG_UINT32_START_PLAYER_MONEY));
 
     // Played time
-    m_lastTick = time(nullptr);
+    m_lastTick = sWorld.GetGameTime();
     m_playedTime[PLAYED_TIME_TOTAL] = 0;
     m_playedTime[PLAYED_TIME_LEVEL] = 0;
 
@@ -1123,7 +1129,7 @@ void Player::Update(uint32 update_diff, uint32 p_time)
         m_AI->UpdateAI(p_time);
     SetCanDelayTeleport(false);
 
-    time_t now = time(nullptr);
+    time_t now = sWorld.GetGameTime();
 
     UpdatePvPFlagTimer(update_diff);
 
@@ -3248,6 +3254,8 @@ void Player::GiveLevel(uint32 level)
     // update level to hunter/summon pet
     if (Pet* pet = GetPet())
         pet->SynchronizeLevelWithOwner();
+
+    sClassDeckMgr.OnLevelChanged(this);
 }
 
 void Player::UpdateFreeTalentPoints(bool resetIfNeed)
@@ -4191,7 +4199,7 @@ bool Player::ResetTalents(bool noCost)
             m_resetTalentsMultiplier = sWorld.getConfig(CONFIG_UINT32_RESPEC_MAX_MULTIPLIER);
         }
 
-        m_resetTalentsTime = time(nullptr);
+        m_resetTalentsTime = sWorld.GetGameTime();
     }
 
     //FIXME: remove pet before or after unlearn spells? for now after unlearn to allow removing of talent related, pet affecting auras
@@ -4522,6 +4530,7 @@ void Player::DeleteFromDB(ObjectGuid playerGuid, uint32 accountId, bool updateRe
             CharacterDatabase.PExecute("DELETE FROM `character_skills` WHERE `guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_forgotten_skills` WHERE `guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_spell` WHERE `guid` = '%u'", lowGuid);
+            CharacterDatabase.PExecute("DELETE FROM `character_class_deck_draft` WHERE `guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_spell_cooldown` WHERE `guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `item_instance` WHERE `owner_guid` = '%u'", lowGuid);
             CharacterDatabase.PExecute("DELETE FROM `character_social` WHERE `guid` = '%u' OR `friend`='%u'", lowGuid, lowGuid);
@@ -5633,33 +5642,10 @@ void Player::SetSkill(uint16 id, uint16 currVal, uint16 maxVal, uint16 step /*=0
             else
                 m_skillStatusMap.erase(itr);
 
-            // Remove all spells dependent on this skill unconditionally
+            // Remove all spells dependent on this skill unconditionally.
+            // Quest completion and active quest state persist when the
+            // required profession is unlearned.
             UpdateSkillTrainedSpells(id, 0);
-
-            // remove all quests related to this skill (else the spell will be automatically learned at next login, cf Player::LearnQuestRewardedSpells)
-            for (auto& itr : mQuestStatus)
-            {
-                if (Quest const* quest = sObjectMgr.GetQuestTemplate(itr.first))
-                {
-                    if (quest->GetRequiredSkill() == id)
-                    {
-                        // remove all quest entries for 'entry' from quest log
-                        for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
-                        {
-                            if (GetQuestSlotQuestId(slot) == itr.first)
-                            {
-                                SetQuestSlot(slot, 0);
-                                TakeOrReplaceQuestStartItems(itr.first, false, false);
-                                break;
-                            }
-                        }
-
-                        // set quest status to not started (will updated in DB at next save)
-                        SetQuestStatus(itr.first, QUEST_STATUS_NONE); // Does not invalidate the iterator
-                        itr.second.uState = QUEST_DELETED;
-                    }
-                }
-            }
         }
     }
     else if (currVal)                                       // add
@@ -6504,6 +6490,68 @@ void Player::RewardReputation(Quest const* pQuest)
     }
 }
 
+struct GuildWarProjectionUpdateHelper
+{
+    void operator()(Unit* unit) const
+    {
+        if (unit->GetTypeId() == TYPEID_PLAYER)
+            unit->ForceValuesUpdateAtIndex(PLAYER_FLAGS);
+        unit->ForceValuesUpdateAtIndex(UNIT_FIELD_FACTIONTEMPLATE);
+    }
+};
+
+void Player::SetInGuild(uint32 guildId)
+{
+    uint32 oldGuildId = GetGuildId();
+    if (oldGuildId == guildId)
+        return;
+
+    SetUInt32Value(PLAYER_GUILDID, guildId);
+    if (!sWorld.IsGuildWarsRealm() || !IsInWorld())
+        return;
+
+    Group* group = GetGroup();
+    if (group && group->isBGGroup())
+        group = GetOriginalGroup();
+    if (group)
+    {
+        bool incompatible = false;
+        for (Group::MemberSlot const& slot : group->GetMemberSlots())
+        {
+            if (slot.guid == GetObjectGuid())
+                continue;
+            uint32 memberGuildId = 0;
+            if (Player* member = sObjectMgr.GetPlayer(slot.guid))
+                memberGuildId = member->GetGuildId();
+            else if (Guild* memberGuild = sGuildMgr.GetPlayerGuild(slot.guid.GetCounter()))
+                memberGuildId = memberGuild->GetId();
+            if (!sWorld.AreGuildWarAllies(guildId, memberGuildId))
+            {
+                incompatible = true;
+                break;
+            }
+        }
+        if (incompatible)
+            RemoveFromGroup(group, GetObjectGuid());
+    }
+
+    if (Map* map = FindMap())
+    {
+        GuildWarProjectionUpdateHelper updateProjection;
+        for (auto itr = map->GetPlayers().getFirst(); itr != nullptr; itr = itr->next())
+        {
+            Player* visiblePlayer = itr->getSource();
+            if (!visiblePlayer || !visiblePlayer->IsInWorld())
+                continue;
+            updateProjection(visiblePlayer);
+            visiblePlayer->CallForAllControlledUnits(
+                updateProjection,
+                CONTROLLED_PET | CONTROLLED_GUARDIANS | CONTROLLED_CHARM |
+                    CONTROLLED_MINIPET | CONTROLLED_TOTEMS);
+        }
+    }
+}
+
 uint32 Player::GetGuildIdFromDB(ObjectGuid guid)
 {
     uint32 lowGuid = guid.GetCounter();
@@ -6695,9 +6743,14 @@ void Player::UpdateZone(uint32 newZone, uint32 newArea)
     if (pvpInfo.inPvPEnforcedArea && !IsTaxiFlying()) // in hostile area
         UpdatePvP(true);
 
-    // on a ffa realm, ffa is toggled together with pvp flag
+    // Guild Wars is FFA throughout the outdoor world, including a player's
+    // own faction territory. Generic FFA keeps its existing PvP-flag gate.
     if (sWorld.IsFFAPvPRealm())
-        SetFFAPvP(IsPvP() && !IsGameMaster() && !HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING));
+    {
+        bool enabled = !IsGameMaster() && !HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING) &&
+            (sWorld.IsGuildWarsRealm() || IsPvP());
+        SetFFAPvP(enabled);
+    }
 
     if ((zoneEntry->Flags & AREA_FLAG_CAPITAL) && !pvpInfo.inPvPEnforcedArea) // in capital city
         SetRestType(REST_TYPE_IN_CITY);
@@ -8286,6 +8339,8 @@ void Player::SendInitWorldStates(uint32 zoneid) const
     {
         count += BuildWarEffortWorldStates(data);
     }
+
+    count += sSovereigntyMgr.FillInitialWorldStates(data, mapId, zoneid);
 
     data << uint32(0) << uint32(0);     // [-ZERO] Add terminator to prevent repeating audio bug.
     data.put<uint16>(countPos, count);  // set actual world state amount
@@ -11539,7 +11594,7 @@ void Player::AddItemToBuyBackSlot(Item* pItem, uint32 money, ObjectGuid vendorGu
     sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "STORAGE: AddItemToBuyBackSlot item = %u, slot = %u", pItem->GetEntry(), slot);
 
     m_items[slot] = pItem;
-    time_t base = time(nullptr);
+    time_t base = sWorld.GetGameTime();
     uint32 etime = uint32(base - m_loginTime + (30 * 3600));
     uint32 eslot = slot - BUYBACK_SLOT_START;
 
@@ -11662,6 +11717,7 @@ void Player::TradeCancel(bool sendback, TradeStatus status /*= TRADE_STATUS_TRAD
 {
     if (m_trade)
     {
+        sMarketStallMgr.OnTradeCanceled(this, "trade-teardown");
         Player* trader = m_trade->GetTrader();
 
         // send yellow "Trade canceled" message to both traders
@@ -12946,7 +13002,7 @@ void Player::AddQuest(Quest const* pQuest, Object* questGiver)
 
         AddTimedQuest(questId);
         questStatusData.m_timer = limittime * IN_MILLISECONDS;
-        qtime = static_cast<uint32>(time(nullptr)) + limittime;
+        qtime = static_cast<uint32>(sWorld.GetGameTime()) + limittime;
     }
     else
         questStatusData.m_timer = 0;
@@ -16077,7 +16133,7 @@ void Player::SendRaidInfo() const
             time_t resetTime = DungeonResetScheduler::IsRaidResetSchedulingGlobal()
                 ? sMapPersistentStateMgr.GetScheduler().GetResetTimeFor(state->GetMapId())
                 : state->GetResetTime();
-            data << uint32(resetTime - time(nullptr));
+            data << uint32(resetTime - sWorld.GetGameTime());
             data << uint32(state->GetInstanceId());         // instance id
 
             counter++;
@@ -16434,6 +16490,18 @@ void Player::UpdateCharacterFlags()
     SetCharacterFlag(CHARACTER_FLAG_GHOST, HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GHOST));
     SetCharacterFlag(CHARACTER_FLAG_PVP_DESIRED, IsPvPDesired());
     SetCharacterFlag(CHARACTER_FLAG_GM_MODE, HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GM));
+}
+
+bool Player::SaveClassDeckSpellsAndState(uint32 draftIndex)
+{
+    if (!CharacterDatabase.BeginTransaction(GetGUIDLow()))
+        return false;
+    _SaveSpells();
+    CharacterDatabase.PExecute(
+        "UPDATE `character_class_deck_draft` SET `state`='2' "
+        "WHERE `guid`='%u' AND `draft_index`='%u' AND `state`='1'",
+        GetGUIDLow(), draftIndex);
+    return CharacterDatabase.CommitTransactionDirect();
 }
 
 void Player::SaveToDB(bool online, bool force)
@@ -17376,6 +17444,7 @@ Pet* Player::GetMiniPet() const
 
 void Player::Say(char const* text, uint32 const language) const
 {
+    CoworldRecordChatEvent(this, text);
     WorldPacket data;
     ChatHandler::BuildChatPacket(data, CHAT_MSG_SAY, text, Language(language), GetChatTag(), GetObjectGuid(), GetName());
     float range = std::min(sWorld.getConfig(CONFIG_FLOAT_LISTEN_RANGE_SAY), GetYellRange());
@@ -17479,7 +17548,8 @@ void Player::PetSpellInitialize()
             if (itr->second.state == PETSPELL_REMOVED)
                 continue;
 
-            data << uint32(MAKE_UNIT_ACTION_BUTTON(itr->first, itr->second.active));
+            data << uint32(itr->first);
+            data << uint16(itr->second.active);
             ++addlist;
         }
     }
@@ -17569,7 +17639,7 @@ void Player::CharmSpellInitialize() const
         }
     }
 
-    WorldPacket data(SMSG_PET_SPELLS, 8 + 4 + 1 + 1 + 2 + 4 * MAX_UNIT_ACTION_BAR_INDEX + 1 + 4 * addlist + 1);
+    WorldPacket data(SMSG_PET_SPELLS, 8 + 4 + 1 + 1 + 2 + 4 * MAX_UNIT_ACTION_BAR_INDEX + 1 + 6 * addlist + 1);
     data << charm->GetObjectGuid();
     data << int32(duration);
     data << uint8(charmInfo->GetReactState());
@@ -17587,7 +17657,10 @@ void Player::CharmSpellInitialize() const
         {
             CharmSpellEntry* cspell = charmInfo->GetCharmSpell(i);
             if (cspell->GetAction())
-                data << uint32(cspell->packedData);
+            {
+                data << uint32(cspell->GetAction());
+                data << uint16(cspell->GetType());
+            }
         }
     }
 
@@ -18406,6 +18479,37 @@ void Player::InitDataForForm(bool reapplyMods)
 }
 
 // Return true is the bought item has a max count to force refresh of window by caller
+bool Player::IsVendorItemVisible(Creature* vendor, VendorItem const* vendorItem, ItemPrototype const* itemProto)
+{
+    if (!vendor || !vendorItem || !itemProto)
+        return false;
+
+    if (IsGameMaster())
+        return true;
+
+    // Class restrictions hide only bind-on-pickup items. Race
+    // restrictions always hide the row.
+    if ((itemProto->AllowableClass & GetClassMask()) == 0 && itemProto->Bonding == BIND_WHEN_PICKED_UP)
+        return false;
+    if ((itemProto->AllowableRace & GetRaceMask()) == 0)
+        return false;
+
+    // When no faction is explicit, the vendor faction supplies the
+    // reputation requirement.
+    if (!itemProto->RequiredReputationFaction && itemProto->RequiredReputationRank > 0 &&
+        ReputationRank(itemProto->RequiredReputationRank) > GetReputationRank(vendor->GetFactionId()))
+        return false;
+
+#if SUPPORTED_CLIENT_BUILD <= CLIENT_BUILD_1_6_1
+    if (itemProto->RequiredReputationFaction && itemProto->RequiredReputationRank > 0 &&
+        ReputationRank(itemProto->RequiredReputationRank) > GetReputationRank(itemProto->RequiredReputationFaction))
+        return false;
+#endif
+
+    return !vendorItem->conditionId ||
+        IsConditionSatisfied(vendorItem->conditionId, this, vendor->GetMap(), vendor, CONDITION_FROM_VENDOR);
+}
+
 bool Player::BuyItemFromVendor(ObjectGuid vendorGuid, uint32 item, uint8 count, uint8 bag, uint8 slot)
 {
     // cheating attempt
@@ -18456,7 +18560,7 @@ bool Player::BuyItemFromVendor(ObjectGuid vendorGuid, uint32 item, uint8 count, 
     }
 
     VendorItem const* crItem = vendorslot < vCount ? vItems->GetItem(vendorslot) : tItems->GetItem(vendorslot - vCount);
-    if (!crItem || crItem->item != item)                    // store diff item (cheating)
+    if (!crItem || crItem->item != item || !IsVendorItemVisible(pCreature, crItem, pProto))
     {
         SendBuyError(BUY_ERR_CANT_FIND_ITEM, pCreature, item, 0);
         return false;
@@ -18494,12 +18598,7 @@ bool Player::BuyItemFromVendor(ObjectGuid vendorGuid, uint32 item, uint8 count, 
         return false;
     }
 
-    if (crItem->conditionId && !IsGameMaster() && !IsConditionSatisfied(crItem->conditionId, this, pCreature->GetMap(), pCreature, CONDITION_FROM_VENDOR))
-    {
-        SendBuyError(BUY_ERR_CANT_FIND_ITEM, pCreature, item, 0);
-        return false;
-    }
-
+    // Visibility, including vendor conditions, was validated above.
     uint32 price  = pProto->BuyPrice * count;
 
     // reputation discount
@@ -18561,9 +18660,20 @@ bool Player::BuyItemFromVendor(ObjectGuid vendorGuid, uint32 item, uint8 count, 
 
     uint32 new_count = pCreature->UpdateVendorItemCurrentCount(crItem, totalCount);
 
+    // SMSG_LIST_INVENTORY numbers only visible rows. Report that same
+    // compact slot so the client updates the item it just purchased.
+    uint32 clientVendorSlot = 0;
+    for (size_t i = 0; i <= vendorslot; ++i)
+    {
+        VendorItem const* listedItem = i < vCount ? vItems->GetItem(i) : tItems->GetItem(i - vCount);
+        ItemPrototype const* listedProto = listedItem ? sObjectMgr.GetItemPrototype(listedItem->item) : nullptr;
+        if (IsVendorItemVisible(pCreature, listedItem, listedProto))
+            ++clientVendorSlot;
+    }
+
     auto packet = std::make_unique<WorldPackets::Item::BuyItemResponse>();
     packet->vendorGuid = pCreature->GetObjectGuid();
-    packet->vendorSlot = vendorslot + 1;
+    packet->vendorSlot = clientVendorSlot;
     packet->newCount = crItem->maxcount > 0 ? new_count : 0xFFFFFFFF;
     packet->purchaseCount = count;
     GetSession()->SendPacket(std::move(packet));
@@ -18753,6 +18863,9 @@ void Player::LeaveBattleground(bool teleportToEntryPoint)
 
 bool Player::CanJoinToBattleground() const
 {
+    // Battleground raids introduce a second alliance boundary.
+    if (sWorld.IsGuildWarsRealm())
+        return false;
     // check Deserter debuff
     return !HasAura(26013);
 }
@@ -19367,8 +19480,19 @@ void Player::LearnQuestRewardedSpells(Quest const* quest)
     if (!found)
         return;
 
-    // prevent learn non first rank unknown profession and second specialization for same profession)
+    // Prevent learning an unknown non-first profession rank or a second
+    // specialization for the same profession. From patch 1.10 onward,
+    // profession specializations are restored only through their explicit
+    // world interactions, not inferred from rewarded quest history.
     uint32 learned_0 = spellInfo->EffectTriggerSpell[EFFECT_INDEX_0];
+    SpellEntry const* learnedInfo = sSpellMgr.GetSpellEntry(learned_0);
+    bool const isProfessionSpecialization =
+        learnedInfo &&
+        learnedInfo->Effect[EFFECT_INDEX_0] == SPELL_EFFECT_TRADE_SKILL &&
+        learnedInfo->Effect[EFFECT_INDEX_1] == 0;
+    if (isProfessionSpecialization && sWorld.GetWowPatch() >= WOW_PATCH_110)
+        return;
+
     if (sSpellMgr.GetSpellRank(learned_0) > 1 && !HasSpell(learned_0))
     {
         // not have first rank learned (unlearned prof?)
@@ -19376,12 +19500,10 @@ void Player::LearnQuestRewardedSpells(Quest const* quest)
         if (!HasSpell(first_spell))
             return;
 
-        SpellEntry const* learnedInfo = sSpellMgr.GetSpellEntry(learned_0);
         if (!learnedInfo)
             return;
 
-        // specialization
-        if (learnedInfo->Effect[EFFECT_INDEX_0] == SPELL_EFFECT_TRADE_SKILL && learnedInfo->Effect[EFFECT_INDEX_1] == 0)
+        if (isProfessionSpecialization)
         {
             // search other specialization for same prof
             for (const auto& itr : m_spells)
@@ -19694,6 +19816,15 @@ void Player::SendSummonRequest(ObjectGuid summonerGuid, uint32 mapId, uint32 zon
     GetSession()->SendPacket(std::move(packet));
 }
 
+void Player::SetSummonPoint(uint32 mapid, float x, float y, float z)
+{
+    m_summon_expire = sWorld.GetGameTime() + MAX_PLAYER_SUMMON_DELAY;
+    m_summon_mapid = mapid;
+    m_summon_x = x;
+    m_summon_y = y;
+    m_summon_z = z;
+}
+
 void Player::SummonIfPossible(bool agree)
 {
     if (!agree)
@@ -19703,7 +19834,7 @@ void Player::SummonIfPossible(bool agree)
     }
 
     // expire and auto declined
-    if (m_summon_expire < time(nullptr))
+    if (m_summon_expire < sWorld.GetGameTime())
         return;
 
     // stop taxi flight at summon
@@ -20237,7 +20368,7 @@ uint32 Player::GetCorpseReclaimDelay(bool pvp) const
             (!pvp && !sWorld.getConfig(CONFIG_BOOL_DEATH_CORPSE_RECLAIM_DELAY_PVE)))
         return copseReclaimDelay[0];
 
-    time_t now = time(nullptr);
+    time_t now = sWorld.GetGameTime();
     // 0..2 full period
     uint32 count = (now < m_deathExpireTime) ? uint32((m_deathExpireTime - now) / DEATH_EXPIRE_STEP) : 0;
     if (count >= 2)
@@ -20253,7 +20384,7 @@ void Player::UpdateCorpseReclaimDelay()
             (!pvp && !sWorld.getConfig(CONFIG_BOOL_DEATH_CORPSE_RECLAIM_DELAY_PVE)))
         return;
 
-    time_t now = time(nullptr);
+    time_t now = sWorld.GetGameTime();
     if (now < m_deathExpireTime)
     {
         // full and partly periods 1..3
@@ -20294,7 +20425,7 @@ void Player::SendCorpseReclaimDelay(bool load) const
 
         time_t expected_time = corpse->GetGhostTime() + copseReclaimDelay[count];
 
-        time_t now = time(nullptr);
+        time_t now = sWorld.GetGameTime();
         if (now >= expected_time)
             return;
 
@@ -21191,7 +21322,7 @@ void Player::SetRestType(RestType restType, uint32 areaTriggerId /*= 0*/)
         SetFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING);
 
         m_innTriggerId = areaTriggerId;
-        m_timeInnEnter = time(nullptr);
+        m_timeInnEnter = sWorld.GetGameTime();
 
         if (sWorld.IsFFAPvPRealm())
             SetFFAPvP(false);

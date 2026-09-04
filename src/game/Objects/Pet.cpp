@@ -20,6 +20,7 @@
  */
 
 #include "Pet.h"
+#include "World.h"
 #include "Group.h"
 #include "Database/DatabaseEnv.h"
 #include "Log.h"
@@ -282,7 +283,7 @@ bool Pet::LoadPetFromDB(Player* owner, uint32 petEntry, uint32 petNumber, bool c
 
     SetCanModifyStats(true);
     InitStatsForLevel(petlevel);
-    SetUInt32Value(UNIT_FIELD_PET_NAME_TIMESTAMP, uint32(time(nullptr)));
+    SetUInt32Value(UNIT_FIELD_PET_NAME_TIMESTAMP, uint32(sWorld.GetGameTime()));
     SetUInt32Value(UNIT_FIELD_PETEXPERIENCE, m_pTmpCache->xp);
     SetCreatorGuid(owner->GetObjectGuid());
 
@@ -340,7 +341,7 @@ bool Pet::LoadPetFromDB(Player* owner, uint32 petEntry, uint32 petNumber, bool c
     }
 
     // since last save (in seconds)
-    uint32 timediff = uint32(time(nullptr) - m_pTmpCache->saveTime);
+    uint32 timediff = uint32(sWorld.GetGameTime() - m_pTmpCache->saveTime);
 
     //load spells/cooldowns/auras
     _LoadAuras(timediff);
@@ -530,7 +531,7 @@ void Pet::SavePetToDB(PetSaveMode mode)
         m_pTmpCache->currentHealth = curhealth;
         m_pTmpCache->currentMana = curmana;
         m_pTmpCache->currentHappiness = GetPower(POWER_HAPPINESS);
-        m_pTmpCache->saveTime = time(nullptr);
+        m_pTmpCache->saveTime = sWorld.GetGameTime();
         m_pTmpCache->resetTalentsCost = m_resetTalentsCost;
         m_pTmpCache->resetTalentsTime = m_resetTalentsTime;
         m_pTmpCache->createdBySpell = GetUInt32Value(UNIT_CREATED_BY_SPELL);
@@ -578,7 +579,7 @@ void Pet::SavePetToDB(PetSaveMode mode)
         m_pTmpCache->teachSpellData = ss.str();
         savePet.addString(ss);
 
-        savePet.addUInt64(uint64(time(nullptr)));
+        savePet.addUInt64(uint64(sWorld.GetGameTime()));
         savePet.addUInt32(uint32(m_resetTalentsCost));
         savePet.addUInt64(uint64(m_resetTalentsTime));
         savePet.addUInt32(GetUInt32Value(UNIT_CREATED_BY_SPELL));

@@ -2611,6 +2611,20 @@ Rate.Auction.Deposit = 1
 Rate.Auction.Cut = 1
 Auction.Deposit.Min = 0
 Auction.AccountConcurrentLimit = 0
+
+###################################################################################################################
+# PLAYER-RUN MARKET STALLS
+#
+#    MarketStall.Enable
+#        Enables 24 curated capital market stalls. Claims, scoped goods, attended enchanting, and craft adverts
+#        are unavailable when disabled; all clerks and stall props are removed by the owning game event.
+#        Ordinary auction houses and trades are unchanged.
+#        Default: 0 - off
+#                 1 - on
+#
+###################################################################################################################
+MarketStall.Enable = 0
+
 Rate.Mining.Amount = 1
 Rate.Mining.Next = 1
 Rate.Talent = 1

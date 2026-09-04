@@ -132,13 +132,15 @@ void ReputationMgr::SendForceReactions()
 
 void ReputationMgr::SendState(FactionState const* faction)
 {
-    auto packet = std::make_unique<WorldPackets::Misc::SetFactionStanding>();
+    auto sendStanding = [this](FactionState const& state)
     {
-        WorldPackets::Misc::FactionStandingEntry entry;
-        entry.reputationListId = faction->ReputationListID;
-        entry.standing = faction->Standing;
-        packet->factionStandings.push_back(entry);
-    }
+        auto packet = std::make_unique<WorldPackets::Misc::SetFactionStanding>();
+        packet->factionStanding.reputationListId = state.ReputationListID;
+        packet->factionStanding.standing = state.Standing;
+        m_player->GetSession()->SendPacket(std::move(packet));
+    };
+
+    sendStanding(*faction);
 
     for (auto& itr : m_factions)
     {
@@ -147,16 +149,9 @@ void ReputationMgr::SendState(FactionState const* faction)
         {
             subFaction.needSend = false;
             if (subFaction.ReputationListID != faction->ReputationListID)
-            {
-                WorldPackets::Misc::FactionStandingEntry entry;
-                entry.reputationListId = subFaction.ReputationListID;
-                entry.standing = subFaction.Standing;
-                packet->factionStandings.push_back(entry);
-            }
+                sendStanding(subFaction);
         }
     }
-
-    m_player->GetSession()->SendPacket(std::move(packet));
 }
 
 void ReputationMgr::SendInitialReputations()

@@ -71,7 +71,7 @@ static uint32 g_sessionCounter = 1;
 // WorldSession constructor
 WorldSession::WorldSession(uint32 id, std::shared_ptr<WorldSocket> sock, AccountTypes sec, time_t mute_time, LocaleConstant locale) :
     m_guid(g_sessionCounter++), m_muteTime(mute_time), m_connected(true), m_disconnectTimer(0), m_who_recvd(false), m_ah_list_recvd(false),
-    m_accountFlags(0), m_idleTime(WorldTimer::getMSTime()), _player(nullptr), m_socket(sock), m_security(sec), m_accountId(id),
+    m_accountFlags(0), m_idleTime(WorldTimer::getMSTime()), _player(nullptr), m_classDeckCapable(false), m_socket(sock), m_security(sec), m_accountId(id),
     m_exhaustionState(0), m_createTime(time(nullptr)), m_previousPlayTime(0), m_logoutTime(0), m_inQueue(false),
     m_playerLoading(false), m_playerLogout(false), m_playerRecentlyLogout(false), m_playerSave(false), m_sessionDbcLocale(sWorld.GetAvailableDbcLocale(locale)),
     m_sessionDbLocaleIndex(sObjectMgr.GetIndexForLocale(locale)), m_latency(0), m_tutorialState(TUTORIALDATA_UNCHANGED), m_warden(nullptr), m_cheatData(nullptr),
@@ -110,6 +110,58 @@ WorldSession::~WorldSession()
 char const* WorldSession::GetPlayerName() const
 {
     return GetPlayer() ? GetPlayer()->GetName() : "<none>";
+}
+
+// Coworld replay v4 records exactly the post-auth world protocol seen by
+// each logged-in character. A solo session is one POV; a party replay bundles
+// several of the same files without changing the wire contract.
+void WorldSession::UpdateCoworldReplaySniff()
+{
+    char const* dir = getenv("COWORLD_RECORD_DIR");
+    bool const inWorldSession = dir && *dir && _player;
+    if (!inWorldSession)
+    {
+        if (m_coworldReplaySniff)
+        {
+            m_sniffFile.reset();
+            m_coworldReplaySniff = false;
+            m_coworldReplayLastFlushMs = 0;
+        }
+        return;
+    }
+    if (m_sniffFile)
+    {
+        FlushCoworldReplaySniff();
+        return;
+    }
+
+    std::string path = std::string(dir) + "/worldwire_" +
+        std::to_string(_player->GetObjectGuid().GetRawValue()) + "_" +
+        std::to_string((uint64)time(nullptr)) + "_" +
+        std::to_string(((uint64)m_guid << 32) | WorldTimer::getMSTime()) + ".pkt";
+    FILE* file = fopen(path.c_str(), "wb");
+    if (!file)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[CoworldReplayV4] cannot open %s", path.c_str());
+        return;
+    }
+    m_sniffFile = std::make_unique<SniffFile>(file);
+    m_sniffFile->WriteHeader();
+    m_sniffFile->Flush();
+    m_coworldReplaySniff = true;
+    m_coworldReplayLastFlushMs = WorldTimer::getMSTime();
+    sLog.Out(LOG_BASIC, LOG_LVL_BASIC, "[CoworldReplayV4] world POV %s -> %s", GetPlayerName(), path.c_str());
+}
+
+void WorldSession::FlushCoworldReplaySniff()
+{
+    if (!m_coworldReplaySniff || !m_sniffFile)
+        return;
+    uint32 const now = WorldTimer::getMSTime();
+    if (m_coworldReplayLastFlushMs && now - m_coworldReplayLastFlushMs < 100)
+        return;
+    m_sniffFile->Flush();
+    m_coworldReplayLastFlushMs = now;
 }
 
 // Sends a packet to the client.
@@ -163,6 +215,7 @@ void WorldSession::SendPacket(WorldPacket const* packet)
 
 void WorldSession::SendPacketImpl(WorldPacket const* packet)
 {
+    UpdateCoworldReplaySniff();
 #ifdef _DEBUG
 
     // Code for network use statistic
@@ -201,7 +254,12 @@ void WorldSession::SendPacketImpl(WorldPacket const* packet)
 
     // sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[%s]Send packet : %u|0x%x (%s)", GetPlayerName(), packet->GetOpcode(), packet->GetOpcode(), LookupOpcodeName(packet->GetOpcode()));
     if (m_sniffFile)
-        m_sniffFile->WritePacket(*packet, false, time(nullptr));
+    {
+        WorldPacket replayPacket(*packet);
+        replayPacket.FillPacketTime(sWorld.GetCurrentMSTime());
+        m_sniffFile->WritePacket(replayPacket, false, time(nullptr));
+        FlushCoworldReplaySniff();
+    }
 
     m_socket->SendPacket(*packet);
 }
@@ -335,8 +393,14 @@ void WorldSession::QueuePacket(std::unique_ptr<ClientPacket const> packet)
 // Add an incoming packet to the queue
 void WorldSession::QueueBinaryPacket(std::unique_ptr<WorldPacket> const& binaryPacket)
 {
+    UpdateCoworldReplaySniff();
     if (m_sniffFile)
-        m_sniffFile->WritePacket(*binaryPacket, true, time(nullptr));
+    {
+        WorldPacket replayPacket(*binaryPacket);
+        replayPacket.FillPacketTime(sWorld.GetCurrentMSTime());
+        m_sniffFile->WritePacket(replayPacket, true, time(nullptr));
+        FlushCoworldReplaySniff();
+    }
 
     if (_player && MovementAnticheat::IsLoggedOpcode(binaryPacket->GetOpcode()))
         GetCheatData()->LogMovementPacket(true, *binaryPacket);
@@ -455,6 +519,7 @@ bool WorldSession::ForcePlayerLogoutDelay()
 // Update the WorldSession (triggered by World update)
 bool WorldSession::Update(PacketFilter& updater)
 {
+    UpdateCoworldReplaySniff();
     uint32 sessionUpdateTime = WorldTimer::getMSTime();
     for (uint32 & i : m_floodPacketsCount)
         i = 0;
@@ -549,7 +614,8 @@ bool WorldSession::CanProcessPackets() const
 void WorldSession::ProcessPackets(PacketFilter& updater)
 {
     std::unique_ptr<ClientPacket const> packet;
-    m_receivedPacketType[updater.PacketProcessType()] = false;
+    if (updater.PacketProcessType() != PACKET_PROCESS_SPELLS)
+        m_receivedPacketType[updater.PacketProcessType()] = false;
     while (CanProcessPackets() && m_recvQueue[updater.PacketProcessType()].next(packet, updater))
     {
         m_receivedPacketType[updater.PacketProcessType()] = true;

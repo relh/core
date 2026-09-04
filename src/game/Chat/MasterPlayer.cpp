@@ -1,4 +1,5 @@
 #include "MasterPlayer.h"
+#include "World.h"
 #include "Database/DatabaseEnv.h"
 #include "ObjectMgr.h"
 #include "SocialMgr.h"
@@ -66,7 +67,7 @@ void MasterPlayer::SaveToDB()
 void MasterPlayer::Update()
 {
     // undelivered mail
-    if (m_nextMailDelivereTime && m_nextMailDelivereTime <= time(nullptr))
+    if (m_nextMailDelivereTime && m_nextMailDelivereTime <= sWorld.GetGameTime())
     {
         GetSession()->SendNewMail();
         ++unReadMails;
@@ -179,7 +180,7 @@ void MasterPlayer::UpdateNextMailTimeAndUnreads()
 {
     // calculate next delivery time (min. from non-delivered mails
     // and recalculate unReadMail
-    time_t cTime = time(nullptr);
+    time_t cTime = sWorld.GetGameTime();
     m_nextMailDelivereTime = 0;
     unReadMails = 0;
     for (PlayerMails::iterator itr = m_mail.begin(); itr != m_mail.end(); ++itr)
@@ -196,7 +197,7 @@ void MasterPlayer::UpdateNextMailTimeAndUnreads()
 
 void MasterPlayer::AddNewMailDeliverTime(time_t deliver_time)
 {
-    if (deliver_time <= time(nullptr))                         // ready now
+    if (deliver_time <= sWorld.GetGameTime())                         // ready now
     {
         ++unReadMails;
         GetSession()->SendNewMail();

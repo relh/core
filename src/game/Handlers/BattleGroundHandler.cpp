@@ -559,7 +559,7 @@ void WorldSession::HandleBattlefieldStatusOpcode(NullClientPacket const& /*packe
             bg = sBattleGroundMgr.GetBattleGround(ginfo.isInvitedToBgInstanceGuid, bgTypeId);
             if (!bg)
                 continue;
-            uint32 remainingTime = WorldTimer::getMSTimeDiff(WorldTimer::getMSTime(), ginfo.removeInviteTime);
+            uint32 remainingTime = WorldTimer::getMSTimeDiff(sWorld.GetCurrentMSTime(), ginfo.removeInviteTime);
             // send status invited to BattleGround
             SendPacket(sBattleGroundMgr.BuildBattleGroundStatusPacket(bg, i, STATUS_WAIT_JOIN, remainingTime, 0));
         }
@@ -570,7 +570,7 @@ void WorldSession::HandleBattlefieldStatusOpcode(NullClientPacket const& /*packe
                 continue;
             uint32 avgTime = bgQueue.GetAverageQueueWaitTime(&ginfo, _player->GetBattleGroundBracketIdFromLevel(bgTypeId));
             // send status in BattleGround Queue
-            SendPacket(sBattleGroundMgr.BuildBattleGroundStatusPacket(bg, i, STATUS_WAIT_QUEUE, avgTime, WorldTimer::getMSTimeDiff(ginfo.joinTime, WorldTimer::getMSTime())));
+            SendPacket(sBattleGroundMgr.BuildBattleGroundStatusPacket(bg, i, STATUS_WAIT_QUEUE, avgTime, WorldTimer::getMSTimeDiff(ginfo.joinTime, sWorld.GetCurrentMSTime())));
         }
     }
 }

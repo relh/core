@@ -3343,7 +3343,7 @@ void CombatBotBaseAI::OnPacketReceived(WorldPacket const* packet)
 #if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_9_4
             data->movementCounter = me->GetLastCounterForMovementChangeType(TELEPORT);
 #endif
-            data->time = uint32(time(nullptr));
+            data->time = uint32(sWorld.GetGameTime());
             me->GetSession()->QueuePacket(std::move(data));
             break;
         }

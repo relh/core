@@ -33,6 +33,7 @@
 #include "Util.h"
 #include "Chat.h"
 #include "Anticheat.h"
+#include "MarketStallMgr.h"
 
 // please DO NOT use iterator++, because it is slower than ++iterator!!!
 // post-incrementation is always slower than pre-incrementation !
@@ -46,6 +47,10 @@ void WorldSession::HandleAuctionHelloOpcode(WorldPackets::AuctionHouse::AuctionH
         sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "WORLD: HandleAuctionHelloOpcode - %s not found or you can't interact with him.", packet.auctioneerGuid.GetString().c_str());
         return;
     }
+
+    uint32 const marketStallGuid = sMarketStallMgr.GetStallGuid(packet.auctioneerGuid);
+    if (marketStallGuid && !sMarketStallMgr.CanOpenAuction(GetPlayer(), marketStallGuid))
+        return;
 
     // remove fake death
     if (GetPlayer()->HasUnitState(UNIT_STATE_FEIGN_DEATH))
@@ -269,6 +274,12 @@ void WorldSession::HandleAuctionSellItem(WorldPackets::AuctionHouse::AuctionSell
 
     // always return pointer
     AuctionHouseObject* auctionHouse = sAuctionMgr.GetAuctionsMap(auctionHouseEntry);
+    uint32 const marketStallGuid = sMarketStallMgr.GetStallGuid(packet.auctioneerGuid);
+    if (!sMarketStallMgr.ValidateAuctionListing(pl, marketStallGuid, packet.bid, packet.buyout, packet.etime))
+    {
+        SendAuctionCommandResult(nullptr, AUCTION_STARTED, AUCTION_ERR_DATABASE);
+        return;
+    }
 
     uint32 limit = sWorld.getConfig(CONFIG_UINT32_ACCOUNT_CONCURRENT_AUCTION_LIMIT);
     if (!!limit && auctionHouse->GetAccountAuctionCount(GetAccountId()) >= limit)
@@ -372,9 +383,10 @@ void WorldSession::HandleAuctionSellItem(WorldPackets::AuctionHouse::AuctionSell
     AH->bid = 0;
     AH->buyout = packet.buyout;
     AH->lockedIpAddress = GetRemoteAddress();
-    AH->depositTime = time(nullptr);
-    AH->expireTime = time(nullptr) + auction_time;
+    AH->depositTime = sWorld.GetGameTime();
+    AH->expireTime = sWorld.GetGameTime() + auction_time;
     AH->deposit = deposit;
+    AH->marketStallGuid = marketStallGuid;
     AH->auctionHouseEntry = auctionHouseEntry;
 
     sLog.Player(this, LOG_MONEY_TRADES, LOG_LVL_MINIMAL, "[AuctionHouse]: Player %s listing %s (%u) at auctioneer %s. Initial bid: %u, buyout: %u, duration: %u, auctionhouse: %u",
@@ -394,6 +406,7 @@ void WorldSession::HandleAuctionSellItem(WorldPackets::AuctionHouse::AuctionSell
     sWorld.LogTransaction(data);
 
     auctionHouse->AddAuction(AH);
+    sMarketStallMgr.OnAuctionChanged(marketStallGuid);
 
     sAuctionMgr.AddAItem(it);
     pl->MoveItemFromInventory(it->GetBagSlot(), it->GetSlot(), true);
@@ -446,9 +459,9 @@ void WorldSession::HandleAuctionPlaceBid(WorldPackets::AuctionHouse::AuctionPlac
     AuctionEntry* auction = auctionHouse->GetAuction(packet.auctionId);
     Player* pl = GetPlayer();
 
-    if (!auction)
+    if (!auction || !sMarketStallMgr.CanAccessAuction(auction, sMarketStallMgr.GetStallGuid(packet.auctioneerGuid)))
     {
-        // item not found; auction may have expired, or been bought out
+        // item not found; auction may have expired, or belongs to another stall
         SendAuctionCommandResult(nullptr, AUCTION_BID_PLACED, AUCTION_ERR_ITEM_NOT_FOUND);
         return;
     }
@@ -554,11 +567,13 @@ void WorldSession::HandleAuctionPlaceBid(WorldPackets::AuctionHouse::AuctionPlac
 
         SendAuctionCommandResult(auction, AUCTION_BID_PLACED, AUCTION_OK);
 
+        uint32 const changedMarketStallGuid = auction->marketStallGuid;
         sAuctionMgr.RemoveAItem(auction->itemGuidLow);
         auctionHouse->RemoveAuction(auction);
         auction->DeleteFromDB();
 
         delete auction;
+        sMarketStallMgr.OnAuctionChanged(changedMarketStallGuid);
     }
     CharacterDatabase.BeginTransaction(pl->GetGUIDLow());
     pl->SaveInventoryAndGoldToDB();
@@ -581,7 +596,7 @@ void WorldSession::HandleAuctionRemoveItem(WorldPackets::AuctionHouse::AuctionRe
     AuctionEntry* auction = auctionHouse->GetAuction(packet.auctionId);
     Player* pl = GetPlayer();
 
-    if (auction && auction->owner == pl->GetGUIDLow())
+    if (auction && sMarketStallMgr.CanAccessAuction(auction, sMarketStallMgr.GetStallGuid(packet.auctioneerGuid)) && auction->owner == pl->GetGUIDLow())
     {
         Item *pItem = sAuctionMgr.GetAItem(auction->itemGuidLow);
         if (pItem)
@@ -626,16 +641,18 @@ void WorldSession::HandleAuctionRemoveItem(WorldPackets::AuctionHouse::AuctionRe
     auction->DeleteFromDB();
     pl->SaveInventoryAndGoldToDB();
     CharacterDatabase.CommitTransaction();
+    uint32 const changedMarketStallGuid = auction->marketStallGuid;
     sAuctionMgr.RemoveAItem(auction->itemGuidLow);
     auctionHouse->RemoveAuction(auction);
     delete auction;
+    sMarketStallMgr.OnAuctionChanged(changedMarketStallGuid);
 }
 
 
 class AuctionHouseClientQueryTask : public AuctionHouseClientQuery
 {
 public:
-    AuctionHouseClientQueryTask(AuctionClientQueryType type) : _queryType(type)
+    AuctionHouseClientQueryTask(AuctionClientQueryType type) : marketStallGuid(0), _queryType(type)
     {
     }
     void operator ()()
@@ -658,7 +675,7 @@ public:
                 case AUCTION_QUERY_LIST:
                 {
                     data.SetOpcode(SMSG_AUCTION_LIST_RESULT);
-                    auctionHouse->BuildListAuctionItems(data, player, *this, count, totalcount);
+                    auctionHouse->BuildListAuctionItems(data, player, *this, count, totalcount, marketStallGuid);
 
                     break;
                 }
@@ -668,7 +685,7 @@ public:
                     for (const auto& outbiddedAuctionId : outbiddedAuctionIds)
                     {
                         AuctionEntry* auction = auctionHouse->GetAuction(outbiddedAuctionId);
-                        if (auction)
+                        if (auction && auction->marketStallGuid == marketStallGuid)
                         {
                             ++totalcount;
 
@@ -678,13 +695,13 @@ public:
                         }
                     }
 
-                    auctionHouse->BuildListBidderItems(data, player, listfrom, count, totalcount);
+                    auctionHouse->BuildListBidderItems(data, player, listfrom, count, totalcount, marketStallGuid);
                     break;
                 }
                 case AUCTION_QUERY_LIST_OWNER:
                 {
                     data.SetOpcode(SMSG_AUCTION_OWNER_LIST_RESULT);
-                    auctionHouse->BuildListOwnerItems(data, player, listfrom, count, totalcount);
+                    auctionHouse->BuildListOwnerItems(data, player, listfrom, count, totalcount, marketStallGuid);
                     break;
                 }
                 default:
@@ -701,6 +718,7 @@ public:
         }
     }
     AuctionHouseObject* auctionHouse;
+    uint32 marketStallGuid;
     AuctionClientQueryType _queryType;
 };
 
@@ -720,6 +738,9 @@ void WorldSession::HandleAuctionListBidderItems(WorldPackets::AuctionHouse::Auct
 
     AuctionHouseClientQueryTask task(AUCTION_QUERY_LIST_BIDDER);
     task.auctionHouse = sAuctionMgr.GetAuctionsMap(auctionHouseEntry);
+    task.marketStallGuid = sMarketStallMgr.GetStallGuid(packet.auctioneerGuid);
+    if (task.marketStallGuid && !sMarketStallMgr.CanOpenAuction(GetPlayer(), task.marketStallGuid))
+        return;
     task.accountId = GetAccountId();
     task.listfrom = packet.pagingElementStartIndex;
     task.outbiddedAuctionIds = packet.bidAuctionIdsToRefresh;
@@ -743,6 +764,9 @@ void WorldSession::HandleAuctionListOwnerItems(WorldPackets::AuctionHouse::Aucti
 
     AuctionHouseClientQueryTask task(AUCTION_QUERY_LIST_OWNER);
     task.auctionHouse = sAuctionMgr.GetAuctionsMap(auctionHouseEntry);
+    task.marketStallGuid = sMarketStallMgr.GetStallGuid(packet.auctioneerGuid);
+    if (task.marketStallGuid && !sMarketStallMgr.CanOpenAuction(GetPlayer(), task.marketStallGuid))
+        return;
     task.accountId = GetAccountId();
     task.listfrom = packet.listfrom;
     SetReceivedAHListRequest(true);
@@ -772,6 +796,9 @@ void WorldSession::HandleAuctionListItems(WorldPackets::AuctionHouse::AuctionLis
 
     // always return pointer
     task.auctionHouse = sAuctionMgr.GetAuctionsMap(auctionHouseEntry);
+    task.marketStallGuid = sMarketStallMgr.GetStallGuid(packet.auctioneerGuid);
+    if (task.marketStallGuid && !sMarketStallMgr.CanOpenAuction(GetPlayer(), task.marketStallGuid))
+        return;
 
     // remove fake death
     if (GetPlayer()->HasUnitState(UNIT_STATE_FEIGN_DEATH))

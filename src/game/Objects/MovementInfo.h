@@ -202,10 +202,10 @@ class MovementInfo
         void ChangeOrientation(float o) { pos.o = o; }
         void ChangePosition(float x, float y, float z, float o) { pos.x = x; pos.y = y; pos.z = z; pos.o = o; }
         void UpdateTime(uint32 _time) { stime = _time; }
-        void SetAsServerSide()
+        void SetAsServerSide(uint32 simulationTime)
         {
             uint32 const oldTime = stime;
-            stime = WorldTimer::getMSTime();
+            stime = simulationTime;
 
             // Preserve order of server side packets.
             if (oldTime >= stime)

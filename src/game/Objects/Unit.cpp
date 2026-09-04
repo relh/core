@@ -495,7 +495,7 @@ void Unit::SendHeartBeat(bool includingSelf)
 
 void Unit::SendMovementPacket(uint16 opcode, bool includingSelf)
 {
-    m_movementInfo.SetAsServerSide();
+    m_movementInfo.SetAsServerSide(sWorld.GetCurrentMSTime());
     WorldPacket data(opcode);
 #if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_8_4
     data << GetPackGUID();
@@ -2196,11 +2196,13 @@ void Unit::AttackerStateUpdate(Unit* pVictim, WeaponAttackType attType, bool ext
 
     ProcDamageAndSpell(ProcSystemArguments(damageInfo.target, damageInfo.procAttacker, damageInfo.procVictim, damageInfo.procEx, damageInfo.totalDamage, damageInfo.totalDamage + damageInfo.totalAbsorb + damageInfo.totalResist, damageInfo.attackType));
 
-    // Damage is done after procs so it can trigger auras on the victim that affect the caster in case of killing blow.
-    DealMeleeDamage(&damageInfo, true);
-
-    // In sniffs SMSG_ATTACKERSTATEUPDATE is sent after chance on hit spell casts from CastItemCombatSpell. This fixes animation for Frostbrand Attack.
+    // In sniffs SMSG_ATTACKERSTATEUPDATE follows chance-on-hit spell casts.
+    // Send it before lethal damage so the client can still resolve the victim
+    // for swing animation, combat feedback, and victim-anchored world text.
     SendAttackStateUpdate(&damageInfo);
+
+    // Damage remains after procs so victim auras can affect the caster on a killing blow.
+    DealMeleeDamage(&damageInfo, true);
 
     if (IsPlayer())
         DEBUG_FILTER_LOG(LOG_FILTER_COMBAT, "AttackerStateUpdate: (Player) %u attacked %u (TypeId: %u) for %u dmg, absorbed %u, blocked %u, resisted %u.",
@@ -4209,6 +4211,27 @@ void Unit::RemoveAuraTypeOnDeath(AuraType auraType)
 
 void Unit::RemoveAllAurasOnDeath()
 {
+    // Hunter's Mark is the single-target exception that ends when its
+    // caster dies. Other caster-owned single-target auras retain their
+    // existing death behavior.
+    SingleCastSpellTargetMap& singleTargets = GetSingleCastSpellTargets();
+    for (SingleCastSpellTargetMap::iterator itr = singleTargets.begin(); itr != singleTargets.end();)
+    {
+        SpellEntry const* spellInfo = itr->first;
+        if (!spellInfo->IsFitToFamily<SPELLFAMILY_HUNTER, CF_HUNTER_HUNTERS_MARK>())
+        {
+            ++itr;
+            continue;
+        }
+
+        ObjectGuid const targetGuid = itr->second;
+        singleTargets.erase(itr);
+        if (IsInWorld())
+            if (Unit* target = GetMap()->GetUnit(targetGuid))
+                target->RemoveAurasByCasterSpell(spellInfo->Id, GetObjectGuid(), AURA_REMOVE_BY_DEATH);
+        itr = singleTargets.begin();
+    }
+
     // used just after dieing to remove all visible auras
     // and disable the mods for the passive ones
     for (SpellAuraHolderMap::iterator iter = m_spellAuraHolders.begin(); iter != m_spellAuraHolders.end();)
@@ -6135,7 +6158,7 @@ void Unit::SetInCombatState(uint32 combatTimer, Unit* pEnemy)
     // example: charge mob and kill it in 1 hit, you leave combat quicker than 5 seconds
     else if (m_combatTimer > UNIT_COMBAT_CHECK_TIMER_MAX && pEnemy && pEnemy->GetObjectGuid() == m_combatTimerTarget)
     {
-        m_combatTimer = UNIT_COMBAT_CHECK_TIMER_MAX - (WorldTimer::getMSTime() % UNIT_COMBAT_CHECK_TIMER_MAX);
+        m_combatTimer = UNIT_COMBAT_CHECK_TIMER_MAX - (sWorld.GetCurrentMSTime() % UNIT_COMBAT_CHECK_TIMER_MAX);
         m_combatTimerTarget.Clear();
     }
 
@@ -7837,7 +7860,7 @@ DiminishingLevels Unit::GetDiminishing(DiminishingGroup group)
             return DIMINISHING_LEVEL_1;
 
         // If last spell was casted more than 15 seconds ago - reset the count.
-        if (i.stack == 0 && WorldTimer::getMSTimeDiff(i.hitTime, WorldTimer::getMSTime()) > 15 * IN_MILLISECONDS)
+        if (i.stack == 0 && WorldTimer::getMSTimeDiff(i.hitTime, sWorld.GetCurrentMSTime()) > 15 * IN_MILLISECONDS)
         {
             i.hitCount = DIMINISHING_LEVEL_1;
             return DIMINISHING_LEVEL_1;
@@ -7860,7 +7883,7 @@ void Unit::IncrDiminishing(DiminishingGroup group)
             i.hitCount += 1;
         return;
     }
-    m_Diminishing.emplace_back(group, WorldTimer::getMSTime(), DIMINISHING_LEVEL_2);
+    m_Diminishing.emplace_back(group, sWorld.GetCurrentMSTime(), DIMINISHING_LEVEL_2);
 }
 
 void Unit::ApplyDiminishingToDuration(DiminishingGroup group, int32& duration, WorldObject const* caster, DiminishingLevels Level, bool isReflected)
@@ -7896,7 +7919,7 @@ void Unit::ApplyDiminishingAura(DiminishingGroup group, bool apply)
             i.stack -= 1;
             // Remember time after last aura from group removed
             if (i.stack == 0)
-                i.hitTime = WorldTimer::getMSTime();
+                i.hitTime = sWorld.GetCurrentMSTime();
         }
         break;
     }
@@ -8477,8 +8500,8 @@ void Unit::AddToWorld()
     ScheduleAINotify(0);
 
     if (sWorld.getConfig(CONFIG_UINT32_SPELL_PROC_DELAY))
-        m_procsUpdateTimer = sWorld.getConfig(CONFIG_UINT32_SPELL_PROC_DELAY) - (WorldTimer::getMSTime() % sWorld.getConfig(CONFIG_UINT32_SPELL_PROC_DELAY));
-    m_combatTimer = UNIT_COMBAT_CHECK_TIMER_MAX - (WorldTimer::getMSTime() % UNIT_COMBAT_CHECK_TIMER_MAX);
+        m_procsUpdateTimer = sWorld.getConfig(CONFIG_UINT32_SPELL_PROC_DELAY) - (sWorld.GetCurrentMSTime() % sWorld.getConfig(CONFIG_UINT32_SPELL_PROC_DELAY));
+    m_combatTimer = UNIT_COMBAT_CHECK_TIMER_MAX - (sWorld.GetCurrentMSTime() % UNIT_COMBAT_CHECK_TIMER_MAX);
 }
 
 void Unit::RemoveFromWorld()
@@ -10052,7 +10075,7 @@ void Unit::NearLandTo(float x, float y, float z, float orientation)
 {
     m_movementInfo.RemoveMovementFlag(MOVEFLAG_JUMPING | MOVEFLAG_FALLINGFAR);
     m_movementInfo.ChangePosition(x, y, z, orientation);
-    m_movementInfo.SetAsServerSide();
+    m_movementInfo.SetAsServerSide(sWorld.GetCurrentMSTime());
 
     WorldPacket data(MSG_MOVE_FALL_LAND, 41);
 #if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_8_4
@@ -11250,7 +11273,7 @@ void Unit::WritePetSpellsCooldown(WorldPacket& data) const
         if (cdData->IsPermanent())
             catCDDuration |= 0x8000000;
 
-        data << uint32(cdData->GetSpellEntry()->Id);
+        data << uint16(cdData->GetSpellEntry()->Id);
         data << uint16(cdData->GetCategory());              // spell category
         data << uint32(spellCDDuration);                    // cooldown
         data << uint32(catCDDuration);                      // category cooldown

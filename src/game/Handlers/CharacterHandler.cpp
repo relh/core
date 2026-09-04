@@ -43,6 +43,7 @@
 #include "PlayerBotMgr.h"
 #include "MapManager.h"
 #include "AccountMgr.h"
+#include "MarketStallMgr.h"
 
 class LoginQueryHolder : public SqlQueryHolder
 {
@@ -362,6 +363,7 @@ void WorldSession::HandleCharDeleteOpcode(WorldPackets::Character::CharDelete co
     if (Player* onlinePlayer = sObjectAccessor.FindPlayer(packet.guid))
         onlinePlayer->GetSession()->LogoutPlayer(true);
 
+    sMarketStallMgr.CloseClaimsForCharacter(packet.guid.GetCounter(), "character-deletion");
     Player::DeleteFromDB(packet.guid, GetAccountId());
 
     sendResponse(CHAR_DELETE_SUCCESS);
@@ -615,7 +617,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
     stmt = LoginDatabase.CreateStatement(updAccount, "UPDATE `account` SET current_realm = ?, online = 1 WHERE id = ?");
     stmt.PExecute(realmID, GetAccountId());
 
-    pCurrChar->SetInGameTime(WorldTimer::getMSTime());
+    pCurrChar->SetInGameTime(sWorld.GetCurrentMSTime());
 
     // announce group about member online (must be after add to player list to receive announce to self)
     if (Group* group = pCurrChar->GetGroup())

@@ -19,6 +19,7 @@ set (game_SRCS
     AccountMgr.cpp
     AuraRemovalMgr.cpp
     AutoBroadCastMgr.cpp
+    ClassDeckMgr.cpp
     Camera.cpp
     Conditions.cpp
     CreatureGroups.cpp
@@ -42,6 +43,7 @@ set (game_SRCS
     ScriptMgr.cpp
     SniffFile.cpp
     SocialMgr.cpp
+    SovereigntyMgr.cpp
     StatSystem.cpp
     UnitAuraProcHandler.cpp
     Weather.cpp
@@ -129,6 +131,7 @@ set (game_SRCS
     LFG/LFGMgr.cpp
     LFG/LFGQueue.cpp
     Mail/Mail.cpp
+    MarketStallMgr.cpp
     Mail/MassMailMgr.cpp
     Maps/GridMap.cpp
     Maps/GridNotifiers.cpp
@@ -250,6 +253,7 @@ set (game_SRCS
     AccountMgr.h
     AuraRemovalMgr.h
     AutoBroadCastMgr.h
+    ClassDeckMgr.h
     Camera.h
     ClientDefines.h
     Conditions.h
@@ -360,6 +364,7 @@ set (game_SRCS
     LFG/LFGQueue.h
     Mail/Mail.h
     Mail/MassMailMgr.h
+    MarketStallMgr.h
     Maps/Cell.h
     Maps/CellImpl.h
     Maps/GridDefines.h

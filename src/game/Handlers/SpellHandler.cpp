@@ -30,6 +30,7 @@
 #include "SpellAuras.h"
 #include "GameObject.h"
 #include "Map.h"
+#include "SovereigntyMgr.h"
 
 using namespace Spells;
 
@@ -250,6 +251,9 @@ void WorldSession::HandleGameObjectUseOpcode(WorldPackets::Misc::GameObjectUse c
         return;
 
     if (!obj->IsAtInteractDistance(_player))
+        return;
+
+    if (sSovereigntyMgr.HandleGameObjectUse(obj, _player))
         return;
 
     if (obj->PlayerCanUse(_player))

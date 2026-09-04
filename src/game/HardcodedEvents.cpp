@@ -36,7 +36,7 @@ void ElementalInvasion::Update()
     {
         auto invasionTime = sObjectMgr.GetSavedVariable(VAR_INVAS_TIMER, 0);
 
-        if (invasionTime < time(nullptr))
+        if (invasionTime < sWorld.GetGameTime())
         {
             sGameEventMgr.StartEvent(EVENT_INVASION, true);
 
@@ -73,7 +73,7 @@ void ElementalInvasion::Update()
             sGameEventMgr.StopEvent(EVENT_INVASION, true);
 
             // set next invasion time
-            sObjectMgr.SetSavedVariable(VAR_INVAS_TIMER, time(nullptr) + urand(2 * 24 * 3600, 4 * 24 * 3600), true);
+            sObjectMgr.SetSavedVariable(VAR_INVAS_TIMER, sWorld.GetGameTime() + urand(2 * 24 * 3600, 4 * 24 * 3600), true);
             ResetThings();
         }
     }
@@ -193,7 +193,7 @@ void DragonsOfNightmare::Update()
         if (!varReqUpdate)
         {
             // We're done, update the permutation and set the respawn time
-            uint32 varRespawnTimer = time(nullptr) + urand(4 * 24 * 3600, 7 * 24 * 3600);
+            uint32 varRespawnTimer = sWorld.GetGameTime() + urand(4 * 24 * 3600, 7 * 24 * 3600);
             GetAliveCountAndUpdateRespawnTime(dragonGUIDs, alive, varRespawnTimer);
 
             sObjectMgr.SetSavedVariable(VAR_RESP_TIME, varRespawnTimer, true);
@@ -215,7 +215,7 @@ void DragonsOfNightmare::Update()
         uint32 varRespawnTimer = 0;
         CheckSingleVariable(VAR_RESP_TIME, varRespawnTimer);
 
-        if (varRespawnTimer < time(nullptr))
+        if (varRespawnTimer < sWorld.GetGameTime())
             sGameEventMgr.StartEvent(m_eventId, true);
     }
 }
@@ -505,14 +505,14 @@ ScourgeInvasionEvent::ScourgeInvasionEvent()
     memset(&previousRemainingCounts[0], -1, sizeof(int) * 6);
 
     // At start up VARIABLE_SI_LATEST_ATTACK_ZONE
-    sObjectMgr.InitSavedVariable(VARIABLE_TANARIS_ATTACK_TIME, time(nullptr));
-    sObjectMgr.InitSavedVariable(VARIABLE_BLASTED_LANDS_ATTACK_TIME, time(nullptr));
-    sObjectMgr.InitSavedVariable(VARIABLE_EASTERN_PLAGUELANDS_ATTACK_TIME, time(nullptr));
-    sObjectMgr.InitSavedVariable(VARIABLE_BURNING_STEPPES_ATTACK_TIME, time(nullptr));
-    sObjectMgr.InitSavedVariable(VARIABLE_WINTERSPRING_ATTACK_TIME, time(nullptr));
-    sObjectMgr.InitSavedVariable(VARIABLE_AZSHARA_ATTACK_TIME, time(nullptr));
-    sObjectMgr.InitSavedVariable(VARIABLE_SI_UNDERCITY_TIME, time(nullptr));
-    sObjectMgr.InitSavedVariable(VARIABLE_SI_STORMWIND_TIME, time(nullptr));
+    sObjectMgr.InitSavedVariable(VARIABLE_TANARIS_ATTACK_TIME, sWorld.GetGameTime());
+    sObjectMgr.InitSavedVariable(VARIABLE_BLASTED_LANDS_ATTACK_TIME, sWorld.GetGameTime());
+    sObjectMgr.InitSavedVariable(VARIABLE_EASTERN_PLAGUELANDS_ATTACK_TIME, sWorld.GetGameTime());
+    sObjectMgr.InitSavedVariable(VARIABLE_BURNING_STEPPES_ATTACK_TIME, sWorld.GetGameTime());
+    sObjectMgr.InitSavedVariable(VARIABLE_WINTERSPRING_ATTACK_TIME, sWorld.GetGameTime());
+    sObjectMgr.InitSavedVariable(VARIABLE_AZSHARA_ATTACK_TIME, sWorld.GetGameTime());
+    sObjectMgr.InitSavedVariable(VARIABLE_SI_UNDERCITY_TIME, sWorld.GetGameTime());
+    sObjectMgr.InitSavedVariable(VARIABLE_SI_STORMWIND_TIME, sWorld.GetGameTime());
 
     sObjectMgr.InitSavedVariable(VARIABLE_SI_ATTACK_COUNT, 0);
     sObjectMgr.InitSavedVariable(VARIABLE_SI_LAST_ATTACK_ZONE, 0);
@@ -610,7 +610,7 @@ void ScourgeInvasionEvent::LogNextZoneTime()
     if (GetActiveZones() > 1)
         return;
 
-    time_t now = time(nullptr);
+    time_t now = sWorld.GetGameTime();
     uint32 timer = 0;
     uint32 zoneid = 0;
 
@@ -704,7 +704,7 @@ void ScourgeInvasionEvent::Update()
     if (!sGameEventMgr.IsActiveEvent(GAME_EVENT_SCOURGE_INVASION))
         sGameEventMgr.StartEvent(GAME_EVENT_SCOURGE_INVASION, true);
 
-    time_t now = time(nullptr);
+    time_t now = sWorld.GetGameTime();
     uint32 victories = sObjectMgr.GetSavedVariable(VARIABLE_SI_ATTACK_COUNT);
 
     for (CityAttack& zone : attackPoints)
@@ -827,14 +827,14 @@ void ScourgeInvasionEvent::Disable()
         pPallid->DeleteLater();
     }
 
-    sObjectMgr.SetSavedVariable(VARIABLE_TANARIS_ATTACK_TIME, time(nullptr), true);
-    sObjectMgr.SetSavedVariable(VARIABLE_BLASTED_LANDS_ATTACK_TIME, time(nullptr), true);
-    sObjectMgr.SetSavedVariable(VARIABLE_EASTERN_PLAGUELANDS_ATTACK_TIME, time(nullptr), true);
-    sObjectMgr.SetSavedVariable(VARIABLE_BURNING_STEPPES_ATTACK_TIME, time(nullptr), true);
-    sObjectMgr.SetSavedVariable(VARIABLE_WINTERSPRING_ATTACK_TIME, time(nullptr), true);
-    sObjectMgr.SetSavedVariable(VARIABLE_AZSHARA_ATTACK_TIME, time(nullptr), true);
-    sObjectMgr.SetSavedVariable(VARIABLE_SI_UNDERCITY_TIME, time(nullptr), true);
-    sObjectMgr.SetSavedVariable(VARIABLE_SI_STORMWIND_TIME, time(nullptr), true);
+    sObjectMgr.SetSavedVariable(VARIABLE_TANARIS_ATTACK_TIME, sWorld.GetGameTime(), true);
+    sObjectMgr.SetSavedVariable(VARIABLE_BLASTED_LANDS_ATTACK_TIME, sWorld.GetGameTime(), true);
+    sObjectMgr.SetSavedVariable(VARIABLE_EASTERN_PLAGUELANDS_ATTACK_TIME, sWorld.GetGameTime(), true);
+    sObjectMgr.SetSavedVariable(VARIABLE_BURNING_STEPPES_ATTACK_TIME, sWorld.GetGameTime(), true);
+    sObjectMgr.SetSavedVariable(VARIABLE_WINTERSPRING_ATTACK_TIME, sWorld.GetGameTime(), true);
+    sObjectMgr.SetSavedVariable(VARIABLE_AZSHARA_ATTACK_TIME, sWorld.GetGameTime(), true);
+    sObjectMgr.SetSavedVariable(VARIABLE_SI_UNDERCITY_TIME, sWorld.GetGameTime(), true);
+    sObjectMgr.SetSavedVariable(VARIABLE_SI_STORMWIND_TIME, sWorld.GetGameTime(), true);
 
     sObjectMgr.SetSavedVariable(VARIABLE_SI_AZSHARA_REMAINING, 0, true);
     sObjectMgr.SetSavedVariable(VARIABLE_SI_BLASTED_LANDS_REMAINING, 0, true);
@@ -971,7 +971,7 @@ bool ScourgeInvasionEvent::OnEnable(uint32 zoneId, uint32 attackTimeVar)
 
 void ScourgeInvasionEvent::StartNewCityAttackIfTime(uint32 timeVariable, uint32 zoneID)
 {
-    time_t now = time(nullptr);
+    time_t now = sWorld.GetGameTime();
 
     // Not yet time
     if (now < sObjectMgr.GetSavedVariable(timeVariable))
@@ -998,7 +998,7 @@ void ScourgeInvasionEvent::StartNewCityAttackIfTime(uint32 timeVariable, uint32 
 // chosen zone is unavailable the invasion will simply not be started, and a new attempt will be made next update
 void ScourgeInvasionEvent::StartNewInvasionIfTime(uint32 timeVariable, uint32 zoneId)
 {
-    time_t now = time(nullptr);
+    time_t now = sWorld.GetGameTime();
 
     // Not yet time
     if (now < sObjectMgr.GetSavedVariable(timeVariable))
@@ -1325,7 +1325,7 @@ void WarEffortEvent::Update()
     // Check Hive colossus flags
     UpdateHiveColossusEvents();
 
-    uint32 now = time(nullptr);
+    uint32 now = sWorld.GetGameTime();
     switch (stage)
     {
         case WAR_EFFORT_STAGE_COLLECTION:
@@ -1485,7 +1485,7 @@ void WarEffortEvent::UpdateWarEffortCollection(uint32 now)
 
 void WarEffortEvent::UpdateStageTransitionTime()
 {
-    lastStageTransitionTime = time(nullptr);
+    lastStageTransitionTime = sWorld.GetGameTime();
     sObjectMgr.SetSavedVariable(VAR_WE_STAGE_TRANSITION_TIME, lastStageTransitionTime, true);
 }
 
@@ -1685,7 +1685,7 @@ bool ChatHandler::HandleWarEffortInfoCommand(char* args)
             uint32 lastAutoCompleteTime = sObjectMgr.GetSavedVariable(VAR_WE_AUTOCOMPLETE_TIME, 0);
             PSendSysMessage("Last Auto Complete Time: %s (%u)", TimeToTimestampStr(lastAutoCompleteTime).c_str(), lastAutoCompleteTime);
 
-            uint32 nextAutoCompleteIn = sWorld.getConfig(CONFIG_UINT32_WAR_EFFORT_AUTOCOMPLETE_PERIOD) - (time(nullptr) - lastAutoCompleteTime);
+            uint32 nextAutoCompleteIn = sWorld.getConfig(CONFIG_UINT32_WAR_EFFORT_AUTOCOMPLETE_PERIOD) - (sWorld.GetGameTime() - lastAutoCompleteTime);
             PSendSysMessage("Next Auto Complete In: %s", secsToTimeString(nextAutoCompleteIn).c_str());
 
             uint32 remainingResources = 0;
@@ -1753,25 +1753,25 @@ bool ChatHandler::HandleWarEffortInfoCommand(char* args)
         case WAR_EFFORT_STAGE_MOVE_4:
         case WAR_EFFORT_STAGE_MOVE_5:
         {
-            uint32 nextAutoCompleteIn = WAR_EFFORT_MOVE_TRANSITION_TIME - (time(nullptr) - lastStageTransitionTime);
+            uint32 nextAutoCompleteIn = WAR_EFFORT_MOVE_TRANSITION_TIME - (sWorld.GetGameTime() - lastStageTransitionTime);
             PSendSysMessage("Next Transition In: %s", secsToTimeString(nextAutoCompleteIn).c_str());
             break;
         }
         case WAR_EFFORT_STAGE_BATTLE:
         {
-            uint32 nextTransitionIn = WAR_EFFORT_CH_ATTACK_TIME - (time(nullptr) - lastStageTransitionTime);
+            uint32 nextTransitionIn = WAR_EFFORT_CH_ATTACK_TIME - (sWorld.GetGameTime() - lastStageTransitionTime);
             PSendSysMessage("Next Transition In: %s", secsToTimeString(nextTransitionIn).c_str());
             break;
         }
         case WAR_EFFORT_STAGE_CH_ATTACK:
         {
-            uint32 nextTransitionIn = WAR_EFFORT_FINAL_BATTLE_TIME - (time(nullptr) - lastStageTransitionTime);
+            uint32 nextTransitionIn = WAR_EFFORT_FINAL_BATTLE_TIME - (sWorld.GetGameTime() - lastStageTransitionTime);
             PSendSysMessage("Next Transition In: %s", secsToTimeString(nextTransitionIn).c_str());
             break;
         }
         case WAR_EFFORT_STAGE_FINALBATTLE:
         {
-            uint32 nextTransitionIn = WAR_EFFORT_GONG_DURATION - (time(nullptr) - gongRingTime);
+            uint32 nextTransitionIn = WAR_EFFORT_GONG_DURATION - (sWorld.GetGameTime() - gongRingTime);
             PSendSysMessage("Next Transition In: %s", secsToTimeString(nextTransitionIn).c_str());
             break;
         }
@@ -1800,7 +1800,7 @@ bool ChatHandler::HandleWarEffortSetStageCommand(char* args)
         return false;
 
     sObjectMgr.SetSavedVariable(VAR_WE_STAGE, stage, true);
-    sObjectMgr.SetSavedVariable(VAR_WE_STAGE_TRANSITION_TIME, time(nullptr), true);
+    sObjectMgr.SetSavedVariable(VAR_WE_STAGE_TRANSITION_TIME, sWorld.GetGameTime(), true);
     PSendSysMessage("War effort stage set to '%s' (%u).", WarEffortStageToString(stage), stage);
     sGameEventMgr.Update();
 

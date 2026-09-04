@@ -26,6 +26,10 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include "Formulas.h"
+#include "Creature.h"
+#include "Map.h"
+#include "Player.h"
+#include "World.h"
 
 GossipMenu::GossipMenu(WorldSession* session) : m_session(session)
 {
@@ -155,6 +159,43 @@ bool PlayerMenu::GossipOptionCoded(unsigned int Selection) const
 
 void PlayerMenu::SendGossipMenu(uint32 textId, ObjectGuid objectGuid)
 {
+    if (sWorld.IsNpcBackstoriesEnabled() && objectGuid.IsAnyTypeCreature())
+    {
+        if (Creature* creature = GetMenuSession()->GetPlayer()->GetMap()->GetCreature(objectGuid))
+        {
+            uint32 const backstoryTextId =
+                sObjectMgr.GetNpcBackstoryTextId(creature->GetEntry());
+            if (backstoryTextId && textId != backstoryTextId)
+            {
+                bool alreadyOffered = false;
+                for (uint32 index = 0; index < mGossipMenu.MenuItemCount(); ++index)
+                {
+                    GossipMenuItem const& item = mGossipMenu.GetItem(index);
+                    if (item.m_gSender == COWORLD_NPC_BACKSTORY_SENDER &&
+                        item.m_gOptionId == backstoryTextId)
+                    {
+                        alreadyOffered = true;
+                        break;
+                    }
+                }
+                if (!alreadyOffered && mGossipMenu.MenuItemCount() >= GOSSIP_MAX_MENU_ITEMS)
+                {
+                    sLog.Out(LOG_DBERROR, LOG_LVL_MINIMAL,
+                        "NPC backstory menu full for creature entry %u.", creature->GetEntry());
+                    MANGOS_ASSERT(false);
+                }
+                else if (!alreadyOffered)
+                {
+                    int const locale = GetMenuSession()->GetSessionDbLocaleIndex();
+                    char const* label = sObjectMgr.GetBroadcastText(
+                        16777215, locale, GetMenuSession()->GetPlayer()->GetGender());
+                    mGossipMenu.AddMenuItem(GOSSIP_ICON_CHAT, label,
+                        COWORLD_NPC_BACKSTORY_SENDER, backstoryTextId);
+                }
+            }
+        }
+    }
+
     constexpr size_t mainPartSize =
         sizeof(ObjectGuid) + // objectGuid
         sizeof(uint32) + // textId

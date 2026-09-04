@@ -21,6 +21,8 @@
 #include "WorldPacket.h"
 #include "Timer.h"
 
+#include <mutex>
+
 struct LoggedPacket
 {
     LoggedPacket(bool isClientPacket_, WorldPacket const& packet) : isClientPacket(isClientPacket_), data(packet), timestamp(time(nullptr))
@@ -46,6 +48,7 @@ public:
         WritePacket(packet.data, packet.isClientPacket, packet.timestamp);
     }
     void WritePacket(WorldPacket const& packet, bool isClientPacket, time_t timestamp);
+    void Flush();
 
     template < template < class ... > class Container, class ... Args >
     void WriteToFile(Container<LoggedPacket, Args...> const& container)
@@ -55,6 +58,7 @@ public:
             WritePacket(itr);
     }
 private:
+    std::mutex m_mutex;
     FILE* m_file;
 };
 

@@ -1062,7 +1062,7 @@ bool ChatHandler::HandleStartCommand(char* /*args*/)
 
 enum : uint32
 {
-    SPELL_UNDYING_SOUL = 20939, // Dummy aura used for Unstuck command
+    SPELL_STUCK = 7355, // Effect-84 spell used by the client Stuck() action
 };
 
 bool ChatHandler::HandleUnstuckCommand(char* /*args*/)
@@ -1072,8 +1072,8 @@ bool ChatHandler::HandleUnstuckCommand(char* /*args*/)
     if (!pPlayer)
         return false;
 
-    SpellEntry const* pSpellEntry = sSpellMgr.GetSpellEntry(SPELL_UNDYING_SOUL);
-    if (pPlayer->IsInCombat() || pPlayer->InBattleGround() || pPlayer->IsTaxiFlying() || !pPlayer->IsSpellReady(pSpellEntry) || (pPlayer->GetDeathState() == CORPSE) || (pPlayer->GetLevel() < 10))
+    SpellEntry const* pSpellEntry = sSpellMgr.GetSpellEntry(SPELL_STUCK);
+    if (pPlayer->IsInCombat() || pPlayer->InBattleGround() || pPlayer->IsTaxiFlying() || !pPlayer->IsSpellReady(pSpellEntry))
     {
         SendSysMessage(LANG_UNSTUCK_UNAVAILABLE);
         return false;
@@ -1081,18 +1081,24 @@ bool ChatHandler::HandleUnstuckCommand(char* /*args*/)
 
     if (pPlayer->IsAlive())
     {
-        pPlayer->CastSpell(pPlayer, SPELL_UNDYING_SOUL, false);
+        pPlayer->CastSpell(pPlayer, SPELL_STUCK, false);
         SendSysMessage(LANG_UNSTUCK_ALIVE);
     }
     else
     {
-        pPlayer->AddAura(SPELL_ID_PASSIVE_RESURRECTION_SICKNESS); // Add Resurrection Sickness
         if (pSpellEntry)
             pPlayer->AddCooldown(pSpellEntry, nullptr, false, HOUR * IN_MILLISECONDS); // Trigger 1 Hour Cooldown
         // Get nearest graveyard.
         WorldSafeLocsEntry const* pClosestGrave = sObjectMgr.GetClosestGraveYard(pPlayer->GetPositionX(), pPlayer->GetPositionY(), pPlayer->GetPositionZ(), pPlayer->GetMapId(), pPlayer->GetTeam());
         if (!pClosestGrave) // No nearby graveyards (stuck in void?). Send ally to Westfall, Horde to Barrens.
             pClosestGrave = pPlayer->GetTeamId() == TEAM_HORDE ? sWorldSafeLocsStore.LookupEntry(10) : sWorldSafeLocsStore.LookupEntry(4);
+
+        // Match WorldSession::SendSpiritResurrect: half health and
+        // power, level-appropriate sickness, 25% durability loss,
+        // and corpse cleanup before returning to the graveyard.
+        pPlayer->ResurrectPlayer(0.5f, true);
+        pPlayer->DurabilityLossAll(0.25f, true);
+        pPlayer->SpawnCorpseBones();
         if (pClosestGrave)
             pPlayer->TeleportTo(pClosestGrave->map_id, pClosestGrave->x, pClosestGrave->y, pClosestGrave->z, sObjectMgr.GetWorldSafeLocFacing(pClosestGrave->ID), 0);
         SendSysMessage(LANG_UNSTUCK_DEAD);

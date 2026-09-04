@@ -325,7 +325,7 @@ time_t DungeonResetScheduler::CalculateNextResetTime(MapEntry const* temp, time_
 
 void DungeonResetScheduler::LoadResetTimes()
 {
-    time_t now = time(nullptr);
+    time_t now = sWorld.GetGameTime();
     // NOTE: Use DirectPExecute for tables that will be queried later
 
     // get the current reset times for normal instances (these may need to be updated)
@@ -449,7 +449,7 @@ void DungeonResetScheduler::ScheduleAllDungeonResets()
 {
     ResetTimeMapType InstResetTime;
 
-    time_t now = time(nullptr);
+    time_t now = sWorld.GetGameTime();
     time_t today = (now / DAY) * DAY;
 
     // Reset times have already been updated and set in LoadResetTimes(). We just need to start
@@ -569,7 +569,7 @@ void DungeonResetScheduler::ScheduleReset(bool add, time_t time, DungeonResetEve
 
 void DungeonResetScheduler::Update()
 {
-    time_t now = time(nullptr), t;
+    time_t now = sWorld.GetGameTime(), t;
     while (!m_resetTimeQueue.empty() && (t = m_resetTimeQueue.begin()->first) < now)
     {
         DungeonResetEvent &event = m_resetTimeQueue.begin()->second;
@@ -620,7 +620,7 @@ void DungeonResetScheduler::Update()
 
 void DungeonResetScheduler::ResetAllRaid()
 {
-    time_t now = time(nullptr);
+    time_t now = sWorld.GetGameTime();
     ResetTimeQueue rTQ;
     rTQ.clear();
 
@@ -694,7 +694,7 @@ MapPersistentState* MapPersistentStateManager::AddPersistentState(MapEntry const
             if (mapEntry->mapType != MAP_RAID)
             {
                 if (!resetTime)
-                    resetTime = time(nullptr) + 2 * HOUR;
+                    resetTime = sWorld.GetGameTime() + 2 * HOUR;
                 dungeonState->SetResetTime(resetTime);
                 // Schedule a reset for new instances, removed when a player enters in DungeonMap::Add
                 m_Scheduler.ScheduleReset(true, resetTime, DungeonResetEvent(RESET_EVENT_NORMAL_DUNGEON, mapEntry->id, instanceId));
@@ -705,7 +705,7 @@ MapPersistentState* MapPersistentStateManager::AddPersistentState(MapEntry const
             else if (!DungeonResetScheduler::IsRaidResetSchedulingGlobal())
             {
                 if (!resetTime)
-                    resetTime = time(nullptr) + DungeonResetScheduler::GetMaxResetTimeFor(mapEntry);
+                    resetTime = sWorld.GetGameTime() + DungeonResetScheduler::GetMaxResetTimeFor(mapEntry);
                 dungeonState->SetResetTime(resetTime);
                 m_Scheduler.ScheduleReset(true, resetTime, DungeonResetEvent(RESET_EVENT_NORMAL_DUNGEON, mapEntry->id, instanceId));
             }
@@ -998,7 +998,7 @@ void MapPersistentStateManager::_ResetOrWarnAll(uint32 mapId, bool warn, uint32 
     if (!mapEntry->IsDungeon())
         return;
 
-    time_t now = time(nullptr);
+    time_t now = sWorld.GetGameTime();
 
     if (!warn)
     {

@@ -637,6 +637,287 @@ bool ChatHandler::HandleReviveCommand(char* args)
     return true;
 }
 
+namespace
+{
+    uint32 CoworldRfcFixtureForTank(char const* name)
+    {
+        std::string const playerName(name);
+        if (playerName == "Rfcwarrior") return 1;
+        if (playerName == "Botwarrior") return 2;
+        if (playerName == "Rfctank") return 3;
+        return 0;
+    }
+
+    uint32 CoworldRfcPartyMemberBit(char const* name, uint32 fixture)
+    {
+        std::string const playerName(name);
+        if (fixture == 1)
+        {
+            if (playerName == "Rfcwarrior") return 1 << 0;
+            if (playerName == "Rfcshaman") return 1 << 1;
+            if (playerName == "Rfcrogue") return 1 << 2;
+            if (playerName == "Rfchunter") return 1 << 3;
+            if (playerName == "Rfcwarlock") return 1 << 4;
+        }
+        if (fixture == 2)
+        {
+            if (playerName == "Botwarrior") return 1 << 0;
+            if (playerName == "Botpriest") return 1 << 1;
+            if (playerName == "Botshaman") return 1 << 2;
+            if (playerName == "Botrogue") return 1 << 3;
+            if (playerName == "Botmage") return 1 << 4;
+        }
+        if (fixture == 3)
+        {
+            if (playerName == "Rfctank") return 1 << 0;
+            if (playerName == "Rfcheal") return 1 << 1;
+            if (playerName == "Rfcsham") return 1 << 2;
+            if (playerName == "Rfcrogue") return 1 << 3;
+            if (playerName == "Rfcmage") return 1 << 4;
+        }
+        return 0;
+    }
+
+    uint32 CoworldRfcConfiguredMemberBit(char const* name, Tokens const& roster)
+    {
+        for (uint32 index = 0; index < roster.size(); ++index)
+            if (roster[index] == name)
+                return 1 << index;
+        return 0;
+    }
+}
+
+bool ChatHandler::HandleRfcWipeResetCommand(char* /*args*/)
+{
+    static uint32 const RfcMapId = 389;
+    static uint32 const RfcExitAreaTriggerId = 2226;
+    static uint32 const RfcEntranceAreaTriggerId = 2230;
+    static uint32 const RfcExteriorMapId = 1;
+    static uint32 const FullRfcPartyMask = (1 << 5) - 1;
+    static uint32 rfcLaunchAttempts = 0;
+
+    Player* requester = m_session ? m_session->GetPlayer() : nullptr;
+    if (!requester)
+    {
+        SendSysMessage("Coworld RFC reset requires an authenticated fixture character.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    std::string const configuredRosterValue =
+        sConfig.GetStringDefault("Coworld.RfcLaunchRoster", "");
+    Tokens const configuredRoster = StrSplit(configuredRosterValue, ",");
+    bool const launchRound = !configuredRosterValue.empty();
+    int32 const configuredMaxAttempts =
+        sConfig.GetIntDefault("Coworld.RfcLaunchMaxAttempts", 4);
+    if (launchRound)
+    {
+        if (configuredRoster.size() != 5 || configuredMaxAttempts < 1)
+        {
+            SendSysMessage("Coworld RFC launch configuration is invalid.");
+            SetSentErrorMessage(true);
+            return false;
+        }
+        for (uint32 index = 0; index < configuredRoster.size(); ++index)
+        {
+            if (configuredRoster[index].empty())
+            {
+                SendSysMessage("Coworld RFC launch roster contains an empty character name.");
+                SetSentErrorMessage(true);
+                return false;
+            }
+            for (uint32 other = index + 1; other < configuredRoster.size(); ++other)
+                if (configuredRoster[index] == configuredRoster[other])
+                {
+                    SendSysMessage("Coworld RFC launch roster contains duplicate character names.");
+                    SetSentErrorMessage(true);
+                    return false;
+                }
+        }
+        if (rfcLaunchAttempts >= uint32(configuredMaxAttempts))
+        {
+            SendSysMessage("Coworld RFC launch attempt budget is exhausted.");
+            SetSentErrorMessage(true);
+            return false;
+        }
+    }
+
+    std::vector<Player*> members;
+    Group* group = requester->GetGroup();
+    if (!group)
+    {
+        if (launchRound || std::string(requester->GetName()) != "Rfcsolo")
+        {
+            SendSysMessage("Coworld RFC reset rejected for this character.");
+            SetSentErrorMessage(true);
+            return false;
+        }
+        members.push_back(requester);
+    }
+    else
+    {
+        uint32 const fixture = CoworldRfcFixtureForTank(requester->GetName());
+        bool const requesterIsLeader =
+            group->GetLeaderGuid() == requester->GetObjectGuid();
+        bool const requesterMayLaunch = launchRound &&
+            configuredRoster[0] == requester->GetName();
+        if (!requesterIsLeader || (!requesterMayLaunch && !fixture))
+        {
+            SendSysMessage("Only the declared RFC tank may reset or launch its party.");
+            SetSentErrorMessage(true);
+            return false;
+        }
+
+        uint32 partyMask = 0;
+        for (GroupReference* ref = group->GetFirstMember(); ref != nullptr; ref = ref->next())
+        {
+            Player* member = ref->getSource();
+            if (!member || !member->GetSession())
+            {
+                SendSysMessage("All five RFC fixture clients must be online before reset.");
+                SetSentErrorMessage(true);
+                return false;
+            }
+            uint32 bit = launchRound
+                ? CoworldRfcConfiguredMemberBit(member->GetName(), configuredRoster)
+                : CoworldRfcPartyMemberBit(member->GetName(), fixture);
+            if (!bit || (partyMask & bit))
+            {
+                SendSysMessage("Coworld RFC reset rejected for this party roster.");
+                SetSentErrorMessage(true);
+                return false;
+            }
+            partyMask |= bit;
+            members.push_back(member);
+        }
+        if (members.size() != 5 || partyMask != FullRfcPartyMask)
+        {
+            SendSysMessage("Coworld RFC reset requires the exact five-character roster.");
+            SetSentErrorMessage(true);
+            return false;
+        }
+    }
+
+    uint32 instanceId = 0;
+    for (Player* member : members)
+    {
+        Corpse* corpse = member->GetCorpse();
+        uint32 const memberInstanceId =
+            member->GetMapId() == RfcMapId ? member->GetInstanceId() :
+            (corpse && corpse->GetMapId() == RfcMapId ? corpse->GetInstanceId() : 0);
+        if (memberInstanceId && instanceId && memberInstanceId != instanceId)
+        {
+            SendSysMessage("RFC fixture members refer to different bound instances.");
+            SetSentErrorMessage(true);
+            return false;
+        }
+        if (memberInstanceId)
+            instanceId = memberInstanceId;
+    }
+
+    AreaTriggerTeleport const* exit =
+        sObjectMgr.GetAreaTriggerTeleport(RfcExitAreaTriggerId);
+    if (!exit || exit->destination.mapId != RfcExteriorMapId)
+    {
+        SendSysMessage("RFC exit AreaTrigger 2226 is unavailable.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    AreaTriggerTeleport const* entrance =
+        sObjectMgr.GetAreaTriggerTeleport(RfcEntranceAreaTriggerId);
+    if (launchRound && (!entrance || entrance->destination.mapId != RfcMapId))
+    {
+        SendSysMessage("RFC entrance AreaTrigger 2230 is unavailable.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    for (Player* member : members)
+    {
+        if (!member->IsInWorld() || member->IsBeingTeleported())
+        {
+            PSendSysMessage("RFC fixture member %s must finish its current world transfer before reset.", member->GetName());
+            SetSentErrorMessage(true);
+            return false;
+        }
+        if (!member->IsAlive())
+        {
+            member->ResurrectPlayer(1.0f);
+            member->SpawnCorpseBones();
+        }
+        member->DurabilityRepairAll(false, 0);
+        if (!member->TeleportTo(exit->destination))
+        {
+            PSendSysMessage("Coworld RFC reset could not teleport %s.", member->GetName());
+            SetSentErrorMessage(true);
+            return false;
+        }
+    }
+
+    if (launchRound)
+        ++rfcLaunchAttempts;
+
+    // Far teleports remove the roster from the old RFC map before the
+    // exterior world transfer finishes. The requester-owned event resumes
+    // after that transfer, when the old map is empty, and delegates to the same
+    // canonical reset owner as CMSG_RESET_INSTANCES.
+    requester->m_Events.AddLambdaEventAtOffset([requester, launchRound, configuredRoster]()
+    {
+        if (!requester->GetSession())
+            return;
+        if (Group* resetGroup = requester->GetGroup())
+        {
+            if (resetGroup->IsLeader(requester->GetObjectGuid()))
+                resetGroup->ResetInstances(INSTANCE_RESET_ALL, requester);
+        }
+        else
+            requester->ResetInstances(INSTANCE_RESET_ALL);
+
+        if (!launchRound)
+            return;
+        AreaTriggerTeleport const* entrance =
+            sObjectMgr.GetAreaTriggerTeleport(RfcEntranceAreaTriggerId);
+        Group* launchGroup = requester->GetGroup();
+        if (!entrance || !launchGroup ||
+            !launchGroup->IsLeader(requester->GetObjectGuid()))
+            return;
+        uint32 launchMask = 0;
+        uint32 launchMemberCount = 0;
+        for (GroupReference* ref = launchGroup->GetFirstMember();
+             ref != nullptr; ref = ref->next())
+        {
+            Player* member = ref->getSource();
+            uint32 const bit = member && member->GetSession()
+                ? CoworldRfcConfiguredMemberBit(member->GetName(), configuredRoster)
+                : 0;
+            if (!bit || (launchMask & bit))
+                return;
+            launchMask |= bit;
+            ++launchMemberCount;
+        }
+        if (launchMemberCount != 5 || launchMask != FullRfcPartyMask)
+            return;
+        for (GroupReference* ref = launchGroup->GetFirstMember();
+             ref != nullptr; ref = ref->next())
+        {
+            Player* member = ref->getSource();
+            if (member && member->GetSession())
+                member->TeleportTo(entrance->destination);
+        }
+    }, 1);
+
+    PSendSysMessage(launchRound
+        ? "Coworld RFC launch accepted for %u characters; fresh map-389 zoning queued."
+        : "Coworld RFC reset restored and repaired %u fixture character(s) at the exterior portal.",
+        (uint32)members.size());
+    sLog.Out(LOG_BASIC, LOG_LVL_BASIC,
+        "Coworld RFC reset: requester=%s instance=%u members=%u launch=%u attempts=%u",
+        requester->GetName(), instanceId, (uint32)members.size(),
+        launchRound ? 1u : 0u, rfcLaunchAttempts);
+    return true;
+}
+
 bool ChatHandler::HandleExploreCheatCommand(char* args)
 {
     if (!*args)

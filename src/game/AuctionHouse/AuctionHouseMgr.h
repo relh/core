@@ -79,6 +79,7 @@ struct AuctionEntry
     time_t expireTime;
     uint32 bidder;
     uint32 deposit;                                         // deposit can be calculated only when creating auction
+    uint32 marketStallGuid = 0;
     AuctionHouseEntry const* auctionHouseEntry;             // in AuctionHouse.dbc
 
     // helpers
@@ -133,11 +134,11 @@ class AuctionHouseObject
 
         void Update();
 
-        void BuildListBidderItems(WorldPacket& data, Player* player, uint32 listfrom, uint32& count, uint32& totalcount);
-        void BuildListOwnerItems(WorldPacket& data, Player* player, uint32 listfrom, uint32& count, uint32& totalcount);
+        void BuildListBidderItems(WorldPacket& data, Player* player, uint32 listfrom, uint32& count, uint32& totalcount, uint32 marketStallGuid);
+        void BuildListOwnerItems(WorldPacket& data, Player* player, uint32 listfrom, uint32& count, uint32& totalcount, uint32 marketStallGuid);
         void BuildListAuctionItems(WorldPacket& data, Player* player,
                 AuctionHouseClientQuery const& query,
-            uint32& count, uint32& totalcount);
+            uint32& count, uint32& totalcount, uint32 marketStallGuid);
         uint32 GetAccountAuctionCount(uint32 accountId) { return AccountAuctionMap.count(accountId); }
     private:
         // Map BUYOUT prices to entry for pre-sorted results. We maintain it in
@@ -189,6 +190,10 @@ class AuctionHouseMgr
         bool RemoveAItem(uint32 id);
 
         void Update();
+        uint32 CountMarketStallAuctions(uint32 stallGuid) const;
+        uint32 CountActiveMarketStallAuctions(uint32 stallGuid) const;
+        void ExpireMarketStallAuctions(uint32 stallGuid);
+        void ExpireOrphanMarketStallAuctions();
 
     private:
         AuctionHouseObject* MakeNewAuctionHouseObject();

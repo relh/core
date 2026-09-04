@@ -23,6 +23,20 @@
 #include "MapManager.h"
 #include "Player.h"
 #include "GridNotifiers.h"
+#include "Creature.h"
+#include "Item.h"
+#include "ItemPrototype.h"
+#include "Spell.h"
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <algorithm>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
 #include "Log.h"
 #include "GridStates.h"
 #include "CellImpl.h"
@@ -124,12 +138,12 @@ Map::Map(uint32 id, time_t expiry, uint32 InstanceId)
       m_id(id), m_instanceId(InstanceId), m_unloadTimer(0),
       m_visibilityDistance(DEFAULT_VISIBILITY_DISTANCE), m_persistentState(nullptr),
       m_activeNonPlayersIter(m_activeNonPlayers.end()), m_transportsUpdateIter(m_transports.end()),
-      m_createTime(time(nullptr)), m_gridExpiry(expiry), m_terrainData(sTerrainMgr.LoadTerrain(id)),
+      m_createTime(sWorld.GetGameTime()), m_gridExpiry(expiry), m_terrainData(sTerrainMgr.LoadTerrain(id)),
       m_data(nullptr), m_scriptId(0), m_unloading(false), m_crashed(false),
       m_processingSendObjUpdates(false), m_processingUnitsRelocation(false),
       m_updateFinished(false), m_updateDiffMod(0), m_gridActivationDistance(DEFAULT_VISIBILITY_DISTANCE),
-      m_lastPlayersUpdate(WorldTimer::getMSTime()), m_lastMapUpdate(WorldTimer::getMSTime()),
-      m_lastCellsUpdate(WorldTimer::getMSTime()), m_inactivePlayersSkippedUpdates(0),
+      m_lastPlayersUpdate(sWorld.GetCurrentMSTime()), m_lastMapUpdate(sWorld.GetCurrentMSTime()),
+      m_lastCellsUpdate(sWorld.GetCurrentMSTime()), m_inactivePlayersSkippedUpdates(0),
       m_objUpdatesThreads(0), m_unitRelocationThreads(0), m_lastPlayerLeftTime(0),
       m_lastMvtSpellsUpdate(0), m_bonesCleanupTimer(0), m_uiScriptedEventsTimer(1000)
 {
@@ -838,14 +852,14 @@ inline void Map::UpdateActiveCellsSynch(uint32 now, uint32 diff)
 
 inline void Map::UpdateCells(uint32 map_diff)
 {
-    uint32 now = WorldTimer::getMSTime();
+    uint32 now = sWorld.GetCurrentMSTime();
     uint32 diff = WorldTimer::getMSTimeDiff(m_lastCellsUpdate, now);
 
     if (diff < sWorld.getConfig(CONFIG_UINT32_MAPUPDATE_UPDATE_CELLS_DIFF))
         return;
 
     m_lastCellsUpdate = now;
-    m_currentTime = std::chrono::time_point_cast<std::chrono::milliseconds>(Clock::now());
+    m_currentTime = sWorld.GetCurrentClockTime();
 
     // update active cells around players and active objects
     if (IsContinent() && m_cellThreads->status() == ThreadPool::Status::READY)
@@ -877,7 +891,7 @@ void Map::ProcessSessionPackets(PacketProcessing type)
         if (plr && plr->IsInWorld())
         {
             if (type == PACKET_PROCESS_SPELLS)
-                plr->UpdateCooldowns(beginTime);
+                plr->UpdateCooldowns(sWorld.GetCurrentClockTime());
 
             WorldSession* pSession = plr->GetSession();
             MapSessionFilter updater(pSession);
@@ -893,7 +907,7 @@ void Map::ProcessSessionPackets(PacketProcessing type)
 
 void Map::UpdateSessionsMovementAndSpellsIfNeeded()
 {
-    uint32 now = WorldTimer::getMSTime();
+    uint32 now = sWorld.GetCurrentMSTime();
     uint32 diff = WorldTimer::getMSTimeDiff(m_lastMvtSpellsUpdate, now);
 
     if (diff < sWorld.getConfig(CONFIG_UINT32_MAPUPDATE_UPDATE_PACKETS_DIFF))
@@ -901,18 +915,18 @@ void Map::UpdateSessionsMovementAndSpellsIfNeeded()
 
     ProcessSessionPackets(PACKET_PROCESS_MOVEMENT);
     ProcessSessionPackets(PACKET_PROCESS_SPELLS);
-    m_lastMvtSpellsUpdate = WorldTimer::getMSTime();
+    m_lastMvtSpellsUpdate = now;
 }
 
 void Map::UpdatePlayers()
 {
-    uint32 now = WorldTimer::getMSTime();
+    uint32 now = sWorld.GetCurrentMSTime();
     uint32 diff = WorldTimer::getMSTimeDiff(m_lastPlayersUpdate, now);
 
     if (diff < sWorld.getConfig(CONFIG_UINT32_MAPUPDATE_UPDATE_PLAYERS_DIFF))
         return;
 
-    m_currentTime = std::chrono::time_point_cast<std::chrono::milliseconds>(Clock::now());
+    m_currentTime = sWorld.GetCurrentClockTime();
 
     ++m_inactivePlayersSkippedUpdates;
     bool updateInactivePlayers = m_inactivePlayersSkippedUpdates > sWorld.getConfig(CONFIG_UINT32_INACTIVE_PLAYERS_SKIP_UPDATES);
@@ -923,7 +937,8 @@ void Map::UpdatePlayers()
         Player* plr = m_mapRefIter->getSource();
         if (!plr || !plr->IsInWorld())
             continue;
-        if (!updateInactivePlayers && (!plr->IsInCombat() && !plr->GetSession()->HasRecentPacket(PACKET_PROCESS_SPELLS) && !plr->HasScheduledEvent()))
+        bool const receivedSpellPacket = plr->GetSession()->ConsumeRecentPacket(PACKET_PROCESS_SPELLS);
+        if (!updateInactivePlayers && (!plr->IsInCombat() && !receivedSpellPacket && !plr->HasScheduledEvent()))
         {
             plr->AddSkippedUpdateTime(diff);
             continue;
@@ -939,7 +954,7 @@ void Map::UpdatePlayers()
 
 void Map::DoUpdate(uint32 maxDiff)
 {
-    uint32 now = WorldTimer::getMSTime();
+    uint32 now = sWorld.GetCurrentMSTime();
     uint32 diff = WorldTimer::getMSTimeDiff(m_lastMapUpdate, now);
     if (diff > maxDiff)
         diff = maxDiff;
@@ -949,10 +964,507 @@ void Map::DoUpdate(uint32 maxDiff)
     Update(diff);
 }
 
+// Coworld god-view recorder: authoritative per-map player snapshots to a JSONL
+// stream on a fixed cadence. Enabled by COWORLD_RECORD_DIR. Thread-safe across
+// map update threads. See docs/protocol/godview_recorder.md.
+namespace
+{
+    std::mutex g_coworldRecMutex;
+    FILE* g_coworldRecFile = nullptr;
+    bool g_coworldRecInit = false;
+    bool g_coworldRecEnabled = false;
+    uint32 g_coworldRecIntervalMs = 500;
+    uint64 g_coworldRecBytes = 0;
+    uint64 g_coworldRecGenerationBase = 0;
+    uint32 g_coworldRecGeneration = 0;
+    uint64 const g_coworldRecMaxBytes = 256ULL * 1024ULL * 1024ULL;
+    std::unordered_map<Map const*, uint32> g_coworldRecLastWrite;
+    std::unordered_set<Map const*> g_coworldRecActiveMaps;
+    std::unordered_map<Map const*, std::vector<std::string>> g_coworldRecPendingSpellEvents;
+    std::unordered_map<Map const*, std::vector<std::string>> g_coworldRecPendingChatEvents;
+
+    struct CoworldCreatureCollector
+    {
+        std::vector<Creature*> creatures;
+        std::unordered_set<uint64> seen;
+
+        void Visit(CreatureMapType& m)
+        {
+            for (CreatureMapType::iterator it = m.begin(); it != m.end(); ++it)
+            {
+                Creature* creature = it->getSource();
+                if (!creature || creature->IsDespawned() || creature->IsTrigger())
+                    continue;
+                uint64 rawGuid = creature->GetObjectGuid().GetRawValue();
+                if (seen.insert(rawGuid).second)
+                    creatures.push_back(creature);
+            }
+        }
+
+        template<class T> void Visit(GridRefManager<T>&) {}
+    };
+
+    bool CoworldOpenRecorder(char const* dir)
+    {
+        if (g_coworldRecGenerationBase == 0)
+            g_coworldRecGenerationBase = (uint64)time(nullptr) * 1000000ULL;
+        uint64 const generation = g_coworldRecGenerationBase + g_coworldRecGeneration;
+        std::string path = std::string(dir) + "/godview_" + std::to_string(generation) + ".jsonl";
+        FILE* nextFile = fopen(path.c_str(), "wb");
+        if (!nextFile)
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[CoworldRecorder] cannot open %s", path.c_str());
+            return false;
+        }
+        if (g_coworldRecFile)
+        {
+            fflush(g_coworldRecFile);
+            fclose(g_coworldRecFile);
+        }
+        g_coworldRecFile = nextFile;
+        g_coworldRecBytes = 0;
+        g_coworldRecEnabled = true;
+        sLog.Out(
+            LOG_BASIC,
+            LOG_LVL_BASIC,
+            "[CoworldRecorder] god-view -> %s every %u ms (rotate at %llu bytes)",
+            path.c_str(),
+            g_coworldRecIntervalMs,
+            (unsigned long long)g_coworldRecMaxBytes);
+        return true;
+    }
+
+    bool CoworldRecorderHasActiveRfc()
+    {
+        for (Map const* map : g_coworldRecActiveMaps)
+        {
+            if (map && map->GetId() == 389)
+                return true;
+        }
+        return false;
+    }
+
+    void CoworldRotateRecorderIfReady()
+    {
+        if (g_coworldRecBytes < g_coworldRecMaxBytes || CoworldRecorderHasActiveRfc())
+            return;
+        char const* dir = getenv("COWORLD_RECORD_DIR");
+        if (!dir || !*dir)
+            return;
+        ++g_coworldRecGeneration;
+        if (!CoworldOpenRecorder(dir))
+            --g_coworldRecGeneration;
+    }
+
+    void CoworldRecorderLazyInit()
+    {
+        if (g_coworldRecInit)
+            return;
+        g_coworldRecInit = true;
+        char const* dir = getenv("COWORLD_RECORD_DIR");
+        if (!dir || !*dir)
+            return;
+        if (char const* interval = getenv("COWORLD_RECORD_INTERVAL_MS"))
+        {
+            int parsed = atoi(interval);
+            if (parsed > 0)
+                g_coworldRecIntervalMs = (uint32)parsed;
+        }
+        CoworldOpenRecorder(dir);
+    }
+
+    void CoworldJsonString(std::string& out, char const* s)
+    {
+        out += '"';
+        for (char const* p = s; p && *p; ++p)
+        {
+            char c = *p;
+            if (c == '"' || c == '\\')
+                out += '\\';
+            if ((unsigned char)c < 0x20)
+                c = ' ';
+            out += c;
+        }
+        out += '"';
+    }
+
+    void CoworldAppendEquipment(std::string& line, Player* player)
+    {
+        line += ",\"equipment\":[";
+        bool firstItem = true;
+        for (uint8 slot = EQUIPMENT_SLOT_HEAD; slot < EQUIPMENT_SLOT_END; ++slot)
+        {
+            Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            if (!item)
+                continue;
+            ItemPrototype const* proto = item->GetProto();
+            if (!proto)
+                continue;
+            if (!firstItem)
+                line += ',';
+            firstItem = false;
+            line += "{\"slot\":";
+            line += std::to_string((uint32)slot);
+            line += ",\"item_id\":";
+            line += std::to_string(proto->ItemId);
+            line += ",\"display_id\":";
+            line += std::to_string(proto->DisplayInfoID);
+            line += ",\"inventory_type\":";
+            line += std::to_string(proto->InventoryType);
+            line += ",\"class\":";
+            line += std::to_string(proto->Class);
+            line += ",\"subclass\":";
+            line += std::to_string(proto->SubClass);
+            line += '}';
+        }
+        line += ']';
+    }
+
+    void CoworldAppendCast(std::string& line, Unit* unit)
+    {
+        line += ",\"cast\":";
+        if (!unit)
+        {
+            line += "null";
+            return;
+        }
+
+        Spell* spell = unit->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+        char const* kind = "channel";
+        if (!spell)
+        {
+            spell = unit->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            kind = "generic";
+        }
+        if (!spell)
+        {
+            spell = unit->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL);
+            kind = "autorepeat";
+        }
+        if (!spell || !spell->m_spellInfo)
+        {
+            line += "null";
+            return;
+        }
+
+        ObjectGuid const target = spell->m_targets.getUnitTargetGuid();
+        line += "{\"spell_id\":";
+        line += std::to_string(spell->m_spellInfo->Id);
+        line += ",\"cast_time_ms\":";
+        line += std::to_string((uint32)std::max<int32>(0, spell->GetCastTime()));
+        line += ",\"remaining_ms\":";
+        line += std::to_string(spell->GetCastedTime());
+        line += ",\"target\":";
+        line += std::to_string(target.GetCounter());
+        line += ",\"target_raw\":";
+        line += std::to_string(target.GetRawValue());
+        line += ",\"kind\":";
+        CoworldJsonString(line, kind);
+        line += '}';
+    }
+
+    void CoworldAppendSpellEvents(std::string& line, Map* map)
+    {
+        line += ",\"spell_events\":[";
+        auto const found = g_coworldRecPendingSpellEvents.find(map);
+        if (found != g_coworldRecPendingSpellEvents.end())
+        {
+            for (size_t index = 0; index < found->second.size(); ++index)
+            {
+                if (index != 0)
+                    line += ',';
+                line += found->second[index];
+            }
+            g_coworldRecPendingSpellEvents.erase(found);
+        }
+        line += ']';
+    }
+
+    void CoworldAppendChatEvents(std::string& line, Map* map)
+    {
+        line += ",\"chat_events\":[";
+        auto const found = g_coworldRecPendingChatEvents.find(map);
+        if (found != g_coworldRecPendingChatEvents.end())
+        {
+            for (size_t index = 0; index < found->second.size(); ++index)
+            {
+                if (index != 0)
+                    line += ',';
+                line += found->second[index];
+            }
+            g_coworldRecPendingChatEvents.erase(found);
+        }
+        line += ']';
+    }
+
+    void CoworldCollectNearbyCreatures(Map* map, CoworldCreatureCollector& collector)
+    {
+        TypeContainerVisitor<CoworldCreatureCollector, GridTypeMapContainer> gridVisitor(collector);
+        TypeContainerVisitor<CoworldCreatureCollector, WorldTypeMapContainer> worldVisitor(collector);
+
+        for (MapRefManager::const_iterator it = map->GetPlayers().begin(); it != map->GetPlayers().end(); ++it)
+        {
+            Player* player = it->getSource();
+            if (!player || !player->IsInWorld() || !player->IsPositionValid())
+                continue;
+
+            CellArea area = Cell::CalculateCellArea(
+                player->GetPositionX(),
+                player->GetPositionY(),
+                map->GetGridActivationDistance());
+
+            for (uint32 x = area.low_bound.x_coord; x <= area.high_bound.x_coord; ++x)
+            {
+                for (uint32 y = area.low_bound.y_coord; y <= area.high_bound.y_coord; ++y)
+                {
+                    CellPair pair(x, y);
+                    Cell cell(pair);
+                    cell.SetNoCreate();
+                    map->Visit(cell, gridVisitor);
+                    map->Visit(cell, worldVisitor);
+                }
+            }
+        }
+    }
+
+    void CoworldAppendCreatures(std::string& line, std::vector<Creature*> const& creatures)
+    {
+        line += ",\"creatures\":[";
+        bool first = true;
+        for (Creature* creature : creatures)
+        {
+            if (!creature)
+                continue;
+            CreatureInfo const* info = creature->GetCreatureInfo();
+            if (!info)
+                continue;
+            if (!first)
+                line += ',';
+            first = false;
+            line += "{\"guid\":";
+            line += std::to_string(creature->GetGUIDLow());
+            line += ",\"raw_guid\":";
+            line += std::to_string(creature->GetObjectGuid().GetRawValue());
+            line += ",\"entry\":";
+            line += std::to_string(creature->GetEntry());
+            line += ",\"name\":";
+            CoworldJsonString(line, creature->GetName());
+            line += ",\"level\":";
+            line += std::to_string(creature->GetLevel());
+            line += ",\"rank\":";
+            line += std::to_string(info->rank);
+            line += ",\"type\":";
+            line += std::to_string(info->type);
+            line += ",\"display_id\":";
+            line += std::to_string(creature->GetDisplayId());
+            line += ",\"native_display_id\":";
+            line += std::to_string(creature->GetNativeDisplayId());
+            line += ",\"x\":";
+            line += std::to_string(creature->GetPositionX());
+            line += ",\"y\":";
+            line += std::to_string(creature->GetPositionY());
+            line += ",\"z\":";
+            line += std::to_string(creature->GetPositionZ());
+            line += ",\"o\":";
+            line += std::to_string(creature->GetOrientation());
+            line += ",\"hp\":";
+            line += std::to_string(creature->GetHealth());
+            line += ",\"maxhp\":";
+            line += std::to_string(creature->GetMaxHealth());
+            line += ",\"target\":";
+            line += std::to_string(creature->GetTargetGuid().GetCounter());
+            line += ",\"target_raw\":";
+            line += std::to_string(creature->GetTargetGuid().GetRawValue());
+            line += ",\"combat\":";
+            line += (creature->IsInCombat() ? "true" : "false");
+            line += ",\"dead\":";
+            line += (creature->IsAlive() ? "false" : "true");
+            CoworldAppendCast(line, creature);
+            line += '}';
+        }
+        line += ']';
+    }
+
+    void CoworldRecordMapPlayers(Map* map)
+    {
+        std::lock_guard<std::mutex> lock(g_coworldRecMutex);
+        CoworldRecorderLazyInit();
+        if (!g_coworldRecEnabled || !g_coworldRecFile)
+            return;
+
+        bool hasPlayers = map->HavePlayers();
+        bool wasActive = g_coworldRecActiveMaps.find(map) != g_coworldRecActiveMaps.end();
+        if (!hasPlayers && !wasActive)
+            return;
+
+        uint32 now = sWorld.GetCurrentMSTime();
+        uint32& last = g_coworldRecLastWrite[map];
+        if (hasPlayers && last != 0 && (now - last) < g_coworldRecIntervalMs)
+            return;
+        last = now;
+
+        std::string line = "{\"t\":";
+        line += std::to_string((uint64)time(nullptr) * 1000);
+        line += ",\"schema\":3";
+        line += ",\"ms\":";
+        line += std::to_string(now);
+        line += ",\"map\":";
+        line += std::to_string(map->GetId());
+        line += ",\"instance\":";
+        line += std::to_string(map->GetInstanceId());
+        line += ",\"players\":[";
+        bool first = true;
+        for (MapRefManager::const_iterator it = map->GetPlayers().begin(); it != map->GetPlayers().end(); ++it)
+        {
+            Player* player = it->getSource();
+            if (!player)
+                continue;
+            if (!first)
+                line += ',';
+            first = false;
+            line += "{\"guid\":";
+            line += std::to_string(player->GetGUIDLow());
+            line += ",\"raw_guid\":";
+            line += std::to_string(player->GetObjectGuid().GetRawValue());
+            line += ",\"name\":";
+            CoworldJsonString(line, player->GetName());
+            line += ",\"level\":";
+            line += std::to_string(player->GetLevel());
+            line += ",\"race\":";
+            line += std::to_string((uint32)player->GetRace());
+            line += ",\"class\":";
+            line += std::to_string((uint32)player->GetClass());
+            line += ",\"gender\":";
+            line += std::to_string((uint32)player->GetGender());
+            line += ",\"display_id\":";
+            line += std::to_string(player->GetDisplayId());
+            line += ",\"native_display_id\":";
+            line += std::to_string(player->GetNativeDisplayId());
+            line += ",\"mount_display_id\":";
+            line += std::to_string(player->GetMountID());
+            line += ",\"x\":";
+            line += std::to_string(player->GetPositionX());
+            line += ",\"y\":";
+            line += std::to_string(player->GetPositionY());
+            line += ",\"z\":";
+            line += std::to_string(player->GetPositionZ());
+            line += ",\"o\":";
+            line += std::to_string(player->GetOrientation());
+            line += ",\"hp\":";
+            line += std::to_string(player->GetHealth());
+            line += ",\"maxhp\":";
+            line += std::to_string(player->GetMaxHealth());
+            line += ",\"target\":";
+            line += std::to_string(player->GetTargetGuid().GetCounter());
+            line += ",\"target_raw\":";
+            line += std::to_string(player->GetTargetGuid().GetRawValue());
+            line += ",\"combat\":";
+            line += (player->IsInCombat() ? "true" : "false");
+            CoworldAppendEquipment(line, player);
+            CoworldAppendCast(line, player);
+            line += '}';
+        }
+        line += "]";
+        CoworldCreatureCollector collector;
+        CoworldCollectNearbyCreatures(map, collector);
+        CoworldAppendCreatures(line, collector.creatures);
+        CoworldAppendSpellEvents(line, map);
+        CoworldAppendChatEvents(line, map);
+        line += "}\n";
+        g_coworldRecBytes += fwrite(
+            line.c_str(), 1, line.size(), g_coworldRecFile);
+        fflush(g_coworldRecFile);
+        if (hasPlayers)
+            g_coworldRecActiveMaps.insert(map);
+        else
+        {
+            // One explicit empty transition lets the Coworld process close the
+            // instance replay exactly when its last player leaves. It is not a
+            // periodic empty-map recording: inactive maps return above.
+            g_coworldRecActiveMaps.erase(map);
+            g_coworldRecLastWrite.erase(map);
+            g_coworldRecPendingSpellEvents.erase(map);
+            g_coworldRecPendingChatEvents.erase(map);
+        }
+        CoworldRotateRecorderIfReady();
+    }
+}
+
+void CoworldRecordSpellEvent(Unit* caster, Spell const* spell, char const* phase)
+{
+    if (!caster || !spell || !spell->m_spellInfo || !phase)
+        return;
+    Map* map = caster->GetMap();
+    if (!map)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_coworldRecMutex);
+    CoworldRecorderLazyInit();
+    if (!g_coworldRecEnabled)
+        return;
+
+    ObjectGuid const target = spell->m_targets.getUnitTargetGuid();
+    std::string event = "{\"phase\":";
+    CoworldJsonString(event, phase);
+    event += ",\"t\":";
+    event += std::to_string((uint64)time(nullptr) * 1000);
+    event += ",\"ms\":";
+    event += std::to_string(sWorld.GetCurrentMSTime());
+    event += ",\"caster\":";
+    event += std::to_string(caster->GetGUIDLow());
+    event += ",\"caster_raw\":";
+    event += std::to_string(caster->GetObjectGuid().GetRawValue());
+    event += ",\"target\":";
+    event += std::to_string(target.GetCounter());
+    event += ",\"target_raw\":";
+    event += std::to_string(target.GetRawValue());
+    event += ",\"spell_id\":";
+    event += std::to_string(spell->m_spellInfo->Id);
+    event += ",\"cast_time_ms\":";
+    event += std::to_string((uint32)std::max<int32>(0, spell->GetCastTime()));
+    event += ",\"remaining_ms\":";
+    event += std::to_string(spell->GetCastedTime());
+    event += ",\"channel\":";
+    event += (spell->IsChanneled() ? "true" : "false");
+    event += ",\"autorepeat\":";
+    event += (spell->IsAutoRepeat() ? "true" : "false");
+    event += '}';
+    g_coworldRecPendingSpellEvents[map].push_back(event);
+}
+
+void CoworldRecordChatEvent(Player const* speaker, char const* message)
+{
+    if (!speaker || !message || !*message)
+        return;
+    Map* map = speaker->GetMap();
+    if (!map)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_coworldRecMutex);
+    CoworldRecorderLazyInit();
+    if (!g_coworldRecEnabled)
+        return;
+
+    std::string event = "{\"t\":";
+    event += std::to_string((uint64)time(nullptr) * 1000);
+    event += ",\"ms\":";
+    event += std::to_string(sWorld.GetCurrentMSTime());
+    event += ",\"speaker\":";
+    event += std::to_string(speaker->GetGUIDLow());
+    event += ",\"speaker_raw\":";
+    event += std::to_string(speaker->GetObjectGuid().GetRawValue());
+    event += ",\"speaker_name\":";
+    CoworldJsonString(event, speaker->GetName());
+    event += ",\"message\":";
+    CoworldJsonString(event, message);
+    event += '}';
+    g_coworldRecPendingChatEvents[map].push_back(event);
+}
+
 void Map::Update(uint32 t_diff)
 {
     uint32 updateMapTime = WorldTimer::getMSTime();
-    m_currentTime = std::chrono::time_point_cast<std::chrono::milliseconds>(Clock::now());
+    m_currentTime = sWorld.GetCurrentClockTime();
     m_dynamicTree.update(t_diff);
 
     UpdateSessionsMovementAndSpellsIfNeeded();
@@ -1079,6 +1591,7 @@ void Map::Update(uint32 t_diff)
                 m_visibilityDistance = World::GetMaxVisibleDistanceOnContinents();
         }
     }
+    CoworldRecordMapPlayers(this);
     m_updateFinished = true;
 }
 
@@ -2184,7 +2697,7 @@ bool DungeonMap::Add(Player* player)
     // for normal instances cancel the reset schedule when the
     // first player enters (no players yet)
     SetResetSchedule(false);
-    player->AddInstanceEnterTime(GetInstanceId(), time(nullptr));
+    player->AddInstanceEnterTime(GetInstanceId(), sWorld.GetGameTime());
 
     sLog.Out(LOG_BASIC, LOG_LVL_DETAIL, "MAP: Player '%s' is entering instance '%u' of map '%s'", player->GetName(), GetInstanceId(), GetMapName());
     // initialize unload state
@@ -3699,7 +4212,7 @@ void Map::RemoveOldBones(uint32 const diff)
 
     m_bonesCleanupTimer = 0u;
 
-    time_t now = time(nullptr);
+    time_t now = sWorld.GetGameTime();
     std::lock_guard<MapMutexType> guard(m_bonesLock);
     for (auto iter = m_bones.begin(); iter != m_bones.end();)
     {

@@ -702,9 +702,9 @@ bool ChatHandler::HandleInstanceListBindsCommand(char* /*args*/)
         // permanent binds are raids, which reset globally per map since 1.9,
         // before that each raid instance has its own reset time
         if (!bind.second.perm || !DungeonResetScheduler::IsRaidResetSchedulingGlobal())
-            timeleft = secsToTimeString(state->GetResetTime() - time(nullptr), true);
+            timeleft = secsToTimeString(state->GetResetTime() - sWorld.GetGameTime(), true);
         else
-            timeleft = secsToTimeString(sMapPersistentStateMgr.GetScheduler().GetResetTimeFor(bind.first) - time(nullptr));
+            timeleft = secsToTimeString(sMapPersistentStateMgr.GetScheduler().GetResetTimeFor(bind.first) - sWorld.GetGameTime());
 
         if (MapEntry const* entry = sMapStorage.LookupEntry<MapEntry>(bind.first))
         {
@@ -728,9 +728,9 @@ bool ChatHandler::HandleInstanceListBindsCommand(char* /*args*/)
             DungeonPersistentState* state = bind.second.state;
             std::string timeleft;
             if (!bind.second.perm || !DungeonResetScheduler::IsRaidResetSchedulingGlobal())
-                timeleft = secsToTimeString(state->GetResetTime() - time(nullptr), true);
+                timeleft = secsToTimeString(state->GetResetTime() - sWorld.GetGameTime(), true);
             else
-                timeleft = secsToTimeString(sMapPersistentStateMgr.GetScheduler().GetResetTimeFor(bind.first) - time(nullptr));
+                timeleft = secsToTimeString(sMapPersistentStateMgr.GetScheduler().GetResetTimeFor(bind.first) - sWorld.GetGameTime());
 
             if (MapEntry const* entry = sMapStorage.LookupEntry<MapEntry>(bind.first))
             {
@@ -765,7 +765,7 @@ void ChatHandler::HandleInstanceUnbindHelper(Player* player, bool got_map, uint3
         if (itr->first != player->GetMapId())
         {
             DungeonPersistentState* save = itr->second.state;
-            std::string timeleft = secsToTimeString(save->GetResetTime() - time(nullptr), true);
+            std::string timeleft = secsToTimeString(save->GetResetTime() - sWorld.GetGameTime(), true);
 
             if (MapEntry const* entry = sMapStorage.LookupEntry<MapEntry>(itr->first))
             {

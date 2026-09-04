@@ -69,7 +69,7 @@ void LFGQueue::Update()
     while (!World::IsStopped())
     {
         TimePoint const now = std::chrono::time_point_cast<std::chrono::milliseconds>(Clock::now());
-        uint32 const diff = (now - previously).count();
+        uint32 const diff = sWorld.ScaleSimulationDuration((now - previously).count());
 
         GetMessager().Execute(this);
 

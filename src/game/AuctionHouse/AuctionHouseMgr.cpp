@@ -397,7 +397,7 @@ void AuctionHouseMgr::LoadAuctionItems()
 
 void AuctionHouseMgr::LoadAuctions()
 {
-    std::unique_ptr<QueryResult> result = CharacterDatabase.Query("SELECT `id`, `house_id`, `item_guid`, `item_id`, `seller_guid`, `buyout_price`, `expire_time`, `buyer_guid`, `last_bid`, `start_bid`, `deposit` FROM `auction`");
+    std::unique_ptr<QueryResult> result = CharacterDatabase.Query("SELECT `id`, `house_id`, `item_guid`, `item_id`, `seller_guid`, `buyout_price`, `expire_time`, `buyer_guid`, `last_bid`, `start_bid`, `deposit`, `market_stall_guid` FROM `auction`");
     if (!result)
     {
         BarGoLink bar(1);
@@ -429,6 +429,7 @@ void AuctionHouseMgr::LoadAuctions()
         auction->bid = fields[8].GetUInt32();
         auction->startbid = fields[9].GetUInt32();
         auction->deposit = fields[10].GetUInt32();
+        auction->marketStallGuid = fields[11].GetUInt32();
         auction->auctionHouseEntry = nullptr;                  // init later
 
         auction->ownerAccount = sObjectMgr.GetPlayerAccountIdByGUID(auction->owner);
@@ -496,6 +497,60 @@ void AuctionHouseMgr::Update()
 {
     for (const auto& itr : m_vRealAuctionHouses)
         itr->Update();
+}
+
+uint32 AuctionHouseMgr::CountMarketStallAuctions(uint32 stallGuid) const
+{
+    uint32 count = 0;
+    for (const auto& house : m_vRealAuctionHouses)
+        for (const auto& pair : *house->GetAuctions())
+            if (pair.second && pair.second->marketStallGuid == stallGuid)
+                ++count;
+    return count;
+}
+
+uint32 AuctionHouseMgr::CountActiveMarketStallAuctions(uint32 stallGuid) const
+{
+    uint32 count = 0;
+    for (const auto& house : m_vRealAuctionHouses)
+        for (const auto& pair : *house->GetAuctions())
+        {
+            AuctionEntry const* auction = pair.second;
+            if (auction && auction->marketStallGuid == stallGuid &&
+                auction->expireTime > sWorld.GetGameTime())
+                ++count;
+        }
+    return count;
+}
+
+void AuctionHouseMgr::ExpireMarketStallAuctions(uint32 stallGuid)
+{
+    time_t const expired = sWorld.GetGameTime() - 1;
+    for (const auto& house : m_vRealAuctionHouses)
+        for (const auto& pair : *house->GetAuctions())
+            if (pair.second && pair.second->marketStallGuid == stallGuid)
+                pair.second->expireTime = expired;
+    CharacterDatabase.DirectPExecute(
+        "UPDATE `auction` SET `expire_time`='%u' WHERE `market_stall_guid`='%u'",
+        uint32(expired), stallGuid);
+}
+
+void AuctionHouseMgr::ExpireOrphanMarketStallAuctions()
+{
+    for (const auto& house : m_vRealAuctionHouses)
+    {
+        for (const auto& pair : *house->GetAuctions())
+        {
+            AuctionEntry* auction = pair.second;
+            if (!auction || !auction->marketStallGuid)
+                continue;
+            std::unique_ptr<QueryResult> claim = CharacterDatabase.PQuery(
+                "SELECT 1 FROM `market_stall` WHERE `stall_guid`='%u' AND `state`='active' LIMIT 1",
+                auction->marketStallGuid);
+            if (!claim)
+                ExpireMarketStallAuctions(auction->marketStallGuid);
+        }
+    }
 }
 
 uint32 AuctionHouseMgr::GetAuctionHouseTeam(AuctionHouseEntry const* house)
@@ -676,12 +731,12 @@ void AuctionHouseObject::Update()
     }
 }
 
-void AuctionHouseObject::BuildListBidderItems(WorldPacket& data, Player* player, uint32 listfrom, uint32& count, uint32& totalcount)
+void AuctionHouseObject::BuildListBidderItems(WorldPacket& data, Player* player, uint32 listfrom, uint32& count, uint32& totalcount, uint32 marketStallGuid)
 {
     for (const auto& itr : AuctionsMap)
     {
         AuctionEntry* auctionEntry = itr.second;
-        if (auctionEntry && auctionEntry->bidder == player->GetGUIDLow())
+        if (auctionEntry && auctionEntry->marketStallGuid == marketStallGuid && auctionEntry->bidder == player->GetGUIDLow())
         {
             ++totalcount;
 
@@ -692,13 +747,13 @@ void AuctionHouseObject::BuildListBidderItems(WorldPacket& data, Player* player,
     }
 }
 
-void AuctionHouseObject::BuildListOwnerItems(WorldPacket& data, Player* player, uint32 listfrom, uint32& count, uint32& totalcount)
+void AuctionHouseObject::BuildListOwnerItems(WorldPacket& data, Player* player, uint32 listfrom, uint32& count, uint32& totalcount, uint32 marketStallGuid)
 {
     auto bounds = AccountAuctionMap.equal_range(player->GetSession()->GetAccountId());
     for (auto itr = bounds.first; itr != bounds.second; ++itr)
     {
         AuctionEntry* auctionEntry = itr->second;
-        if (auctionEntry && auctionEntry->owner == player->GetGUIDLow())
+        if (auctionEntry && auctionEntry->marketStallGuid == marketStallGuid && auctionEntry->owner == player->GetGUIDLow())
         {
             ++totalcount;
             if (count < 50 && totalcount > listfrom)
@@ -710,26 +765,20 @@ void AuctionHouseObject::BuildListOwnerItems(WorldPacket& data, Player* player, 
 
 void AuctionHouseObject::BuildListAuctionItems(WorldPacket& data, Player* player,
         AuctionHouseClientQuery const& query,
-        uint32& count, uint32& totalcount)
+        uint32& count, uint32& totalcount, uint32 marketStallGuid)
 {
     // Happening often, and easy to deal with
     if (query.auctionMainCategory == 0xffffffff && query.auctionSubCategory == 0xffffffff && query.auctionSlotID == 0xffffffff &&
         query.quality == 0xffffffff && query.levelmin == 0x00 && query.levelmax == 0x00 && query.usable == 0x00 && query.wsearchedname.empty())
     {
-        totalcount = OrderedAuctionMap.size();
-        if (query.listfrom < totalcount)
+        for (auto itr = OrderedAuctionMap.cbegin(); itr != OrderedAuctionMap.cend(); ++itr)
         {
-            auto itr = OrderedAuctionMap.cbegin();
-            std::advance(itr, query.listfrom);
-            for (; itr != OrderedAuctionMap.cend(); ++itr)
-            {
-                if (!itr->second->IsAvailableFor(player))
-                    continue;
-
-                itr->second->BuildAuctionInfo(data);
-                if ((++count) >= 50)
-                    break;
-            }
+            if (itr->second->marketStallGuid != marketStallGuid || !itr->second->IsAvailableFor(player))
+                continue;
+            if (totalcount++ < query.listfrom)
+                continue;
+            if (count < 50 && itr->second->BuildAuctionInfo(data))
+                ++count;
         }
         return;
     }
@@ -744,6 +793,8 @@ void AuctionHouseObject::BuildListAuctionItems(WorldPacket& data, Player* player
     for (const auto& itr : OrderedAuctionMap)
     {
         AuctionEntry* auctionEntry = itr.second;
+        if (auctionEntry->marketStallGuid != marketStallGuid)
+            continue;
         Item *item = sAuctionMgr.GetAItem(auctionEntry->itemGuidLow);
         if (!item)
             continue;
@@ -835,7 +886,9 @@ bool AuctionEntry::BuildAuctionInfo(WorldPacket& data) const
     data << uint32(startbid);                               // Auction->startbid (not sure if useful)
     data << uint32(bid ? GetAuctionOutBid() : 0);           // minimal outbid
     data << uint32(buyout);                                 // auction->buyout
-    data << uint32((expireTime - time(nullptr))*IN_MILLISECONDS); // time left
+    int64 const timeLeftMs = std::max<int64>(
+        0, int64(expireTime - sWorld.GetGameTime()) * IN_MILLISECONDS);
+    data << uint32(std::min<int64>(timeLeftMs, INT32_MAX)); // time left
     data << ObjectGuid(HIGHGUID_PLAYER, bidder);            // auction->bidder current
     data << uint32(bid);                                    // current bid
     return true;
@@ -864,9 +917,9 @@ void AuctionEntry::DeleteFromDB() const
 void AuctionEntry::SaveToDB() const
 {
     //No SQL injection (no strings)
-    CharacterDatabase.PExecute("INSERT INTO `auction` (`id`, `house_id`, `item_guid`, `item_id`, `seller_guid`, `buyout_price`, `expire_time`, `buyer_guid`, `last_bid`, `start_bid`, `deposit`) "
-                               "VALUES ('%u', '%u', '%u', '%u', '%u', '%u', '" UI64FMTD "', '%u', '%u', '%u', '%u')",
-                               Id, auctionHouseEntry->houseId, itemGuidLow, itemTemplate, owner, buyout, (uint64)expireTime, bidder, bid, startbid, deposit);
+    CharacterDatabase.PExecute("INSERT INTO `auction` (`id`, `house_id`, `item_guid`, `item_id`, `seller_guid`, `buyout_price`, `expire_time`, `buyer_guid`, `last_bid`, `start_bid`, `deposit`, `market_stall_guid`) "
+                               "VALUES ('%u', '%u', '%u', '%u', '%u', '%u', '" UI64FMTD "', '%u', '%u', '%u', '%u', '%u')",
+                               Id, auctionHouseEntry->houseId, itemGuidLow, itemTemplate, owner, buyout, (uint64)expireTime, bidder, bid, startbid, deposit, marketStallGuid);
 }
 
 bool AuctionEntry::IsAvailableFor(Player* player)
