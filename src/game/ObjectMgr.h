@@ -889,6 +889,12 @@ class ObjectMgr
         void LoadCreatureLocales();
         void LoadCreatureTemplates();
         void LoadCreatureTemplate(uint32 entry);
+        void LoadNpcBackstories();
+        uint32 GetNpcBackstoryTextId(uint32 creatureEntry) const
+        {
+            auto itr = m_npcBackstoryTextIds.find(creatureEntry);
+            return itr == m_npcBackstoryTextIds.end() ? 0 : itr->second;
+        }
         void CheckCreatureTemplate(CreatureInfo* cInfo);
         CreatureInfo const* GetCreatureTemplate(uint32 id) const
         {
@@ -1611,6 +1617,7 @@ class ObjectMgr
         ItemLocaleMap m_ItemLocaleMap;
         QuestLocaleMap m_QuestLocaleMap;
         NpcTextMap m_NpcTextMap;
+        std::unordered_map<uint32, uint32> m_npcBackstoryTextIds;
         PageTextLocaleMap m_PageTextLocaleMap;
         MangosStringLocaleMap m_MangosStringLocaleMap;
         BroadcastTextLocaleMap m_BroadcastTextLocaleMap;

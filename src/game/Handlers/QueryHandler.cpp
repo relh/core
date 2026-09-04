@@ -30,6 +30,9 @@
 #include "ObjectMgr.h"
 #include "ObjectGuid.h"
 #include "Player.h"
+#include "Item.h"
+#include "GameObject.h"
+#include "Map.h"
 
 void WorldSession::SendNameQueryOpcode(Player* p)
 {
@@ -262,6 +265,55 @@ void WorldSession::HandleNpcTextQueryOpcode(WorldPackets::Npc::NpcTextQuery cons
 
 void WorldSession::HandlePageTextQueryOpcode(WorldPackets::Query::QueryPageText const& packet)
 {
+    if (!packet.sourceGuid.IsEmpty())
+    {
+        auto pageBelongsToSource = [&packet](uint32 firstPageID)
+        {
+            for (uint32 pageID = firstPageID; pageID;)
+            {
+                if (pageID == packet.pageID)
+                    return true;
+                PageText const* page = sPageTextStore.LookupEntry<PageText>(pageID);
+                if (!page)
+                    break;
+                pageID = page->next_page;
+            }
+            return false;
+        };
+
+        bool validSource = false;
+        if (packet.sourceGuid.IsItem())
+        {
+            if (Item* item = _player->GetItemByGuid(packet.sourceGuid))
+            {
+                if (ItemPrototype const* proto = item->GetProto())
+                    validSource = pageBelongsToSource(proto->PageText);
+            }
+        }
+        else if (packet.sourceGuid.IsGameObject())
+        {
+            if (GameObject* object = _player->GetMap()->GetGameObject(packet.sourceGuid))
+            {
+                GameObjectInfo const* info = object->GetGOInfo();
+                if (info && object->IsWithinDistInMap(_player, INTERACTION_DISTANCE))
+                {
+                    if (info->type == GAMEOBJECT_TYPE_TEXT)
+                        validSource = pageBelongsToSource(info->text.pageID);
+                    else if (info->type == GAMEOBJECT_TYPE_GOOBER)
+                        validSource = pageBelongsToSource(info->goober.pageId);
+                }
+            }
+        }
+
+        if (!validSource)
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                "CMSG_PAGE_TEXT_QUERY: Player %s requested page %u from invalid source %s",
+                _player->GetGuidStr().c_str(), packet.pageID, packet.sourceGuid.GetString().c_str());
+            return;
+        }
+    }
+
     uint32 pageID = packet.pageID;
     while (pageID)
     {
@@ -301,6 +353,6 @@ void WorldSession::HandlePageTextQueryOpcode(WorldPackets::Query::QueryPageText 
 void WorldSession::SendQueryTimeResponse()
 {
     auto packet = std::make_unique<WorldPackets::Query::QueryTimeResponse>();
-    packet->time = static_cast<uint32>(time(nullptr));
+    packet->time = static_cast<uint32>(sWorld.GetGameTime());
     SendPacket(std::move(packet));
 }

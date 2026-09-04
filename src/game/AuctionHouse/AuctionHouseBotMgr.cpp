@@ -1,4 +1,5 @@
 #include "Database/DatabaseEnv.h"
+#include "World.h"
 #include "Log.h"
 #include "Policies/SingletonImp.h"
 #include "Item.h"
@@ -170,8 +171,8 @@ void AuctionHouseBotMgr::AddItem(AuctionHouseBotEntry e, AuctionHouseObject *auc
     auctionEntry->bidder             = 0;
     auctionEntry->bid                = 0;
     auctionEntry->deposit            = dep;
-    auctionEntry->depositTime        = time(nullptr);
-    auctionEntry->expireTime         = (time_t) etime + time(nullptr);
+    auctionEntry->depositTime        = sWorld.GetGameTime();
+    auctionEntry->expireTime         = (time_t) etime + sWorld.GetGameTime();
 
     item->SaveToDB();
 

@@ -2,6 +2,19 @@
 
 #include "SpellEntry.h"
 
+void WorldPackets::ClassDeck::Hello::ReadFromWorldPacket(WorldPacket& recv_data)
+{
+    recv_data >> protocolVersion;
+}
+
+void WorldPackets::ClassDeck::Choose::ReadFromWorldPacket(WorldPacket& recv_data)
+{
+    recv_data >> protocolVersion;
+    recv_data >> draftIndex;
+    recv_data >> serviceSpell;
+    recv_data >> catalogVersion;
+}
+
 void WorldPackets::Misc::WorldTeleport::ReadFromWorldPacket(WorldPacket& recv_data)
 {
     recv_data >> timeMs;
@@ -150,6 +163,25 @@ void WorldPackets::Misc::SummonResponse::ReadFromWorldPacket(WorldPacket& recv_d
 void WorldPackets::Misc::SetActionBarToggles::ReadFromWorldPacket(WorldPacket& recv_data)
 {
     recv_data >> actionBar;
+}
+
+void WorldPackets::Misc::LookingForGroupQuery::ReadFromWorldPacket(WorldPacket& recv_data)
+{
+#if SUPPORTED_CLIENT_BUILD >= CLIENT_BUILD_1_12_1
+    recv_data >> packedEntry;
+    recv_data >> queryValue;
+#endif
+}
+
+void WorldPackets::Misc::SetLookingForGroup::ReadFromWorldPacket(WorldPacket& recv_data)
+{
+#if SUPPORTED_CLIENT_BUILD >= CLIENT_BUILD_1_12_1
+    for (uint32& slot : slots)
+        recv_data >> slot;
+    recv_data >> comment;
+#else
+    recv_data >> slots[0];
+#endif
 }
 
 void WorldPackets::Misc::MeetingStoneJoin::ReadFromWorldPacket(WorldPacket& recv_data)
@@ -392,12 +424,8 @@ void WorldPackets::Misc::SetForcedReactions::AppendBodyTo(ByteBuffer& buffer) co
 
 void WorldPackets::Misc::SetFactionStanding::AppendBodyTo(ByteBuffer& buffer) const
 {
-    buffer << static_cast<uint32>(factionStandings.size());
-    for (const auto& entry : factionStandings)
-    {
-        buffer << entry.reputationListId;
-        buffer << entry.standing;
-    }
+    buffer << factionStanding.reputationListId;
+    buffer << factionStanding.standing;
 }
 
 void WorldPackets::Misc::InitializeFactions::AppendBodyTo(ByteBuffer& buffer) const

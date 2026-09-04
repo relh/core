@@ -21,6 +21,7 @@
 
 #include "Object.h"
 #include "SharedDefines.h"
+#include "SovereigntyMgr.h"
 #include "WorldPacket.h"
 #include "Opcodes.h"
 #include "Log.h"
@@ -61,7 +62,7 @@
 
 void MovementInfo::Read(ByteBuffer& data)
 {
-    stime = WorldTimer::getMSTime();
+    stime = sWorld.GetCurrentMSTime();
     data >> moveFlags;
     data >> ctime;
     data >> pos.x;
@@ -105,7 +106,7 @@ void MovementInfo::Read(ByteBuffer& data)
 
 void MovementInfo::FillFrom(MovementInfo const& info)
 {
-    stime = WorldTimer::getMSTime();
+    stime = sWorld.GetCurrentMSTime();
     moveFlags = info.moveFlags;
     ctime = info.ctime;
     pos.x = info.pos.x;
@@ -516,7 +517,7 @@ void Object::BuildMovementUpdate(ByteBuffer* data, uint8 updateFlags) const
         MovementInfo m = wobject->m_movementInfo;
         if (!m.ctime)
         {
-            m.stime = WorldTimer::getMSTime() + 1000;
+            m.stime = sWorld.GetCurrentMSTime() + 1000;
             m.ChangePosition(wobject->GetPositionX(), wobject->GetPositionY(), wobject->GetPositionZ(), wobject->GetOrientation());
         }
         if (unit->ToCreature())
@@ -601,7 +602,7 @@ void Object::BuildMovementUpdate(ByteBuffer* data, uint8 updateFlags) const
     MovementInfo m = wobject ? wobject->m_movementInfo : MovementInfo();
     if (!m.ctime)
     {
-        m.stime = WorldTimer::getMSTime() + 1000;
+        m.stime = sWorld.GetCurrentMSTime() + 1000;
         if (updateFlags & UPDATEFLAG_TRANSPORT)
         {
             GameObject const* go = static_cast<GameObject const*>(wobject);
@@ -802,21 +803,26 @@ void Object::BuildValuesUpdate(uint8 updatetype, ByteBuffer* data, UpdateMask* u
 
                     *data << dynamicFlags;
                 }
-                // RAID ally-horde - Faction
+                // Per-recipient faction projection for cross-faction allies.
                 else if (index == UNIT_FIELD_FACTIONTEMPLATE)
                 {
-                    Unit const* owner = ((Unit*)this)->GetCharmerOrOwner();
-                    if (!owner)
-                        owner = ToPlayer();
+                    Player const* owner = ((Unit*)this)->GetCharmerOrOwnerPlayerOrPlayerItself();
                     bool forceFriendly = false;
-                    if (owner && owner->IsPlayer())
+                    if (owner)
                     {
-                        FactionTemplateEntry const* ft1,* ft2;
-                        ft1 = owner->GetFactionTemplateEntry();
-                        ft2 = target->GetFactionTemplateEntry();
+                        if (sWorld.IsGuildWarsRealm())
+                            forceFriendly = sWorld.AreGuildWarAllies(owner->GetGuildId(), target->GetGuildId());
+                        else
+                        {
+                            FactionTemplateEntry const* ft1 = owner->GetFactionTemplateEntry();
+                            FactionTemplateEntry const* ft2 = target->GetFactionTemplateEntry();
                         if (ft1 && ft2 && !ft1->IsFriendlyTo(*ft2) && static_cast<Player const*>(owner)->IsInSameRaidWith(target))
                             if (static_cast<Player const*>(owner)->IsInInterFactionMode() && target->IsInInterFactionMode())
                                 forceFriendly = true;
+                    if (owner && owner->IsPlayer() &&
+                        sSovereigntyMgr.AreContestAllies(static_cast<Player const*>(owner), target))
+                        forceFriendly = true;
+                        }
                     }
                     uint32 faction = m_uint32Values[index];
                     if (forceFriendly)
@@ -824,14 +830,28 @@ void Object::BuildValuesUpdate(uint8 updatetype, ByteBuffer* data, UpdateMask* u
 
                     *data << uint32(faction);
                 }
-                // RAID ally-horde : no FFA flag
-                else if (index == PLAYER_FLAGS && (m_uint32Values[index] & PLAYER_FLAGS_FFA_PVP))
+                // Per-recipient FFA projection.
+                else if (index == PLAYER_FLAGS)
                 {
                     Player* owner = ((Unit*)this)->GetCharmerOrOwnerPlayerOrPlayerItself();
-                    if (owner && owner != target && owner->IsInSameRaidWith(target))
-                        *data << uint32(m_uint32Values[index] & ~PLAYER_FLAGS_FFA_PVP);
+                    if (sWorld.IsGuildWarsRealm())
+                    {
+                        uint32 flags = m_uint32Values[index];
+                        if (owner && owner != target &&
+                            sWorld.AreGuildWarAllies(owner->GetGuildId(), target->GetGuildId()))
+                            flags &= ~PLAYER_FLAGS_FFA_PVP;
+                        *data << flags;
+                    }
                     else
-                        *data << uint32(m_uint32Values[index]);
+                    {
+                    uint32 flags = m_uint32Values[index];
+                    if (owner && owner != target && sSovereigntyMgr.AreContestEnemies(owner, target))
+                        flags |= PLAYER_FLAGS_FFA_PVP;
+                    else if (owner && owner != target &&
+                        (owner->IsInSameRaidWith(target) || sSovereigntyMgr.AreContestAllies(owner, target)))
+                        flags &= ~PLAYER_FLAGS_FFA_PVP;
+                    *data << flags;
+                    }
                 }
                 // Hide real health value. Send a percent instead. See ShowHealthValues option in mangosd.conf
                 else if (!ShowHealthValues && (index == UNIT_FIELD_HEALTH || index == UNIT_FIELD_MAXHEALTH))
@@ -1519,7 +1539,7 @@ WorldObject::WorldObject()
         m_mapId(0), m_instanceId(0), m_summonLimitAlert(0), m_worldMask(WORLD_DEFAULT_OBJECT), m_zoneScript(nullptr),
         m_transport(nullptr)
 {
-    m_movementInfo.stime = WorldTimer::getMSTime();
+    m_movementInfo.stime = sWorld.GetCurrentMSTime();
 }
 
 void WorldObject::CleanupsBeforeDelete()
@@ -1546,7 +1566,7 @@ void WorldObject::Relocate(float x, float y, float z, float orientation)
     m_position.o = orientation;
 
     m_movementInfo.ChangePosition(x, y, z, orientation);
-    m_movementInfo.UpdateTime(WorldTimer::getMSTime());
+    m_movementInfo.UpdateTime(sWorld.GetCurrentMSTime());
     /*if (ShipTransport* t = GetTransport())
     {
         t->CalculatePassengerOffset(x, y, z);
@@ -3636,11 +3656,25 @@ ReputationRank WorldObject::GetReactionTo(WorldObject const* target) const
                 if (selfPlayerOwner->m_duel && selfPlayerOwner->m_duel->opponent == targetPlayerOwner && selfPlayerOwner->m_duel->startTime != 0 && !selfPlayerOwner->m_duel->finished)
                     return REP_HOSTILE;
 
+                // Guild identity is the sole alliance boundary on Guild Wars realms.
+                if (sWorld.IsGuildWarsRealm())
+                {
+                    if (sWorld.AreGuildWarAllies(selfPlayerOwner->GetGuildId(), targetPlayerOwner->GetGuildId()))
+                        return REP_FRIENDLY;
+                }
+                else
+                {
+                if (sSovereigntyMgr.AreContestEnemies(selfPlayerOwner, targetPlayerOwner))
+                    return REP_HOSTILE;
+                if (sSovereigntyMgr.AreContestAllies(selfPlayerOwner, targetPlayerOwner))
+                    return REP_FRIENDLY;
+
                 // same group - checks dependant only on our faction - skip FFA_PVP for example
                 if (selfPlayerOwner->IsInRaidWith(targetPlayerOwner))
                     return REP_FRIENDLY; // return true to allow config option AllowTwoSide.Interaction.Group to work
                                          // however client seems to allow mixed group parties, because in 13850 client it works like:
                                          // return GetFactionReactionTo(GetFactionTemplateEntry(), target);
+                }
 
                 // Nostalrius: Hackfix because UNIT_BYTE2_FLAG_FFA_PVP is not implemented yet.
                 if (selfPlayerOwner->IsFFAPvP() && targetPlayerOwner->IsFFAPvP())
@@ -3832,10 +3866,15 @@ bool WorldObject::IsValidHelpfulTarget(Unit const* target, bool checkAlive) cons
         if (playerAffectingTarget->m_duel && playerAffectingTarget->m_duel->startTime != 0)
             return false;
 
-        // group forces friendly relations in ffa pvp
-        if (playerAffectingCaster->IsFFAPvP() && playerAffectingTarget->IsFFAPvP() &&
-           !playerAffectingCaster->IsInSameRaidWith(playerAffectingTarget))
-            return false;
+        // Guild Wars replaces the generic FFA raid truce with its guild alliance.
+        if (playerAffectingCaster->IsFFAPvP() && playerAffectingTarget->IsFFAPvP())
+        {
+            bool allied = sWorld.IsGuildWarsRealm()
+                ? sWorld.AreGuildWarAllies(playerAffectingCaster->GetGuildId(), playerAffectingTarget->GetGuildId())
+                : playerAffectingCaster->IsInSameRaidWith(playerAffectingTarget);
+            if (!allied)
+                return false;
+        }
     }
 
     return true;

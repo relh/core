@@ -452,7 +452,7 @@ void WorldSession::HandleMailMarkAsRead(WorldPackets::Mail::MailMarkAsRead const
         pl->MarkMailsUpdated();
         m->state = MAIL_STATE_CHANGED;
 
-        time_t time_now = time(nullptr);
+        time_t time_now = sWorld.GetGameTime();
         if ((m->expire_time - time_now) > (3 * DAY))
             m->expire_time = time_now + (3 * DAY);
     }
@@ -505,7 +505,7 @@ void WorldSession::HandleMailReturnToSender(WorldPackets::Mail::MailReturnToSend
     MasterPlayer* pl = GetMasterPlayer();
     ASSERT(pl);
     Mail *m = pl->GetMail(packet.mailId);
-    if (!m || m->state == MAIL_STATE_DELETED || m->deliver_time > time(nullptr))
+    if (!m || m->state == MAIL_STATE_DELETED || m->deliver_time > sWorld.GetGameTime())
     {
         SendMailResult(packet.mailId, MAIL_RETURNED_TO_SENDER, MAIL_ERR_INTERNAL_ERROR);
         return;
@@ -560,7 +560,7 @@ void WorldSession::HandleMailTakeItem(WorldPackets::Mail::MailTakeItem const& pa
     ASSERT(pl);
 
     Mail* m = pl->GetMail(packet.mailId);
-    if (!m || m->state == MAIL_STATE_DELETED || m->deliver_time > time(nullptr))
+    if (!m || m->state == MAIL_STATE_DELETED || m->deliver_time > sWorld.GetGameTime())
     {
         SendMailResult(packet.mailId, MAIL_ITEM_TAKEN, MAIL_ERR_INTERNAL_ERROR);
         return;
@@ -686,7 +686,7 @@ void WorldSession::HandleMailTakeMoney(WorldPackets::Mail::MailTakeMoney const& 
     ASSERT(pl);
 
     Mail* m = pl->GetMail(packet.mailId);
-    if (!m || m->state == MAIL_STATE_DELETED || m->deliver_time > time(nullptr))
+    if (!m || m->state == MAIL_STATE_DELETED || m->deliver_time > sWorld.GetGameTime())
     {
         SendMailResult(packet.mailId, MAIL_MONEY_TAKEN, MAIL_ERR_INTERNAL_ERROR);
         return;
@@ -752,7 +752,7 @@ void WorldSession::HandleGetMailList(WorldPackets::Mail::GetMailList const& pack
 
     WorldPacket data(SMSG_MAIL_LIST_RESULT, 1 + std::min(pl->GetMailSize(), 253u) * averageSizePerMail);
     data << uint8(0);                                       // mail's count
-    time_t cur_time = time(nullptr);
+    time_t cur_time = sWorld.GetGameTime();
 
     uint32 mailsCount = 0;                                  // real send to client mails amount
     for (PlayerMails::iterator itr = pl->GetMailBegin(); itr != pl->GetMailEnd(); ++itr)
@@ -809,7 +809,7 @@ void WorldSession::HandleGetMailList(WorldPackets::Mail::GetMailList const& pack
         data << uint32((*itr)->money);                      // copper
         data << uint32((*itr)->COD);                        // Cash on delivery
         data << uint32((*itr)->checked);                    // flags
-        data << float(float((*itr)->expire_time - time(nullptr)) / float(DAY));// Time
+        data << float(float((*itr)->expire_time - sWorld.GetGameTime()) / float(DAY));// Time
 
 #if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_9_4
         data << uint32((*itr)->mailTemplateId);             // mail template (MailTemplate.dbc)
@@ -860,7 +860,7 @@ void WorldSession::HandleMailCreateTextItem(WorldPackets::Mail::MailCreateTextIt
     Player* loadedPlayer = _player;
 
     Mail* m = pl->GetMail(packet.mailId);
-    if (!m || (!m->itemTextId && !m->mailTemplateId) || m->state == MAIL_STATE_DELETED || m->deliver_time > time(nullptr) || m->checked & MAIL_CHECK_MASK_COPIED)
+    if (!m || (!m->itemTextId && !m->mailTemplateId) || m->state == MAIL_STATE_DELETED || m->deliver_time > sWorld.GetGameTime() || m->checked & MAIL_CHECK_MASK_COPIED)
     {
         SendMailResult(packet.mailId, MAIL_MADE_PERMANENT, MAIL_ERR_INTERNAL_ERROR);
         return;

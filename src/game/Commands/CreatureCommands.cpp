@@ -15,6 +15,7 @@
  */
 
 #include "Common.h"
+#include "World.h"
 #include "Database/DatabaseEnv.h"
 #include "Player.h"
 #include "Chat.h"
@@ -110,7 +111,7 @@ bool ChatHandler::HandleNpcInfoCommand(char* /*args*/)
     uint32 Entry = target->GetEntry();
     CreatureInfo const* cInfo = target->GetCreatureInfo();
 
-    time_t curRespawnDelay = target->GetRespawnTimeEx() - time(nullptr);
+    time_t curRespawnDelay = target->GetRespawnTimeEx() - sWorld.GetGameTime();
     if (curRespawnDelay < 0)
         curRespawnDelay = 0;
     std::string curRespawnDelayStr = secsToTimeString(curRespawnDelay, true);
@@ -638,9 +639,56 @@ bool ChatHandler::HandleNpcDespawnCommand(char* args)
     return true;
 }
 
-bool ChatHandler::HandleRespawnCommand(char* /*args*/)
+bool ChatHandler::HandleRespawnCommand(char* args)
 {
     Player* pl = m_session->GetPlayer();
+
+    uint32 dbGuid = 0;
+    if (ExtractUInt32(&args, dbGuid))
+    {
+        sObjectMgr.LoadCreatures(true);
+        CreatureData const* data = sObjectMgr.GetCreatureData(dbGuid);
+        if (!data)
+        {
+            PSendSysMessage("Creature spawn guid %u was not found.", dbGuid);
+            SetSentErrorMessage(true);
+            return false;
+        }
+
+        if (data->position.mapId != pl->GetMapId())
+        {
+            PSendSysMessage("Creature spawn guid %u is on map %u, not current map %u.",
+                dbGuid, data->position.mapId, pl->GetMapId());
+            SetSentErrorMessage(true);
+            return false;
+        }
+
+        pl->GetMap()->ForceLoadGridsAroundPosition(
+            data->position.x, data->position.y);
+        ObjectGuid guid(HIGHGUID_UNIT, data->creature_id[0], dbGuid);
+        Creature* creature = pl->GetMap()->GetCreature(guid);
+        if (!creature)
+        {
+            PSendSysMessage("Creature spawn guid %u is not loaded in this map instance.", dbGuid);
+            SetSentErrorMessage(true);
+            return false;
+        }
+
+        creature->Respawn();
+        if (!creature->IsAlive() && !(data->spawn_flags & SPAWN_FLAG_DEAD))
+            creature->SetDeathState(JUST_ALIVED);
+
+        if (!creature->IsAlive())
+        {
+            PSendSysMessage("Creature spawn guid %u remained dead after respawn.", dbGuid);
+            SetSentErrorMessage(true);
+            return false;
+        }
+
+        PSendSysMessage("Coworld: respawned creature spawn guid %u healthy %u/%u.",
+            dbGuid, creature->GetHealth(), creature->GetMaxHealth());
+        return true;
+    }
 
     // accept only explicitly selected target (not implicitly self targeting case)
     Unit* target = GetSelectedUnit();
@@ -657,6 +705,14 @@ bool ChatHandler::HandleRespawnCommand(char* /*args*/)
             ((Creature*)target)->Respawn();
         return true;
     }
+
+    // Coworld world editor: the unselected `.respawn` path is used as
+    // an instant release poke after a gate clears SPAWN_FLAG_DEAD. Stock
+    // VMaNGOS only sweeps already-loaded grid objects; force-load around
+    // the GM first so a released static spawn in the current grid exists
+    // before the respawn visitor runs.
+    pl->GetMap()->ForceLoadGridsAroundPosition(
+        pl->GetPositionX(), pl->GetPositionY());
 
     MaNGOS::RespawnDo u_do;
     MaNGOS::WorldObjectWorker<MaNGOS::RespawnDo> worker(u_do);

@@ -983,7 +983,7 @@ void Spell::EffectDummy(SpellEffectIndex effIdx)
                         return;
                     }
 
-                    pGameObj->SetRespawnTime(creatureTarget->GetRespawnTime() - time(nullptr));
+                    pGameObj->SetRespawnTime(creatureTarget->GetRespawnTime() - sWorld.GetGameTime());
                     pGameObj->SetOwnerGuid(m_caster->GetObjectGuid());
                     //Pose un soucis(Maxinus)
                     // pGameObj->SetUInt32Value(GAMEOBJECT_LEVEL, m_caster->GetLevel());
@@ -1293,7 +1293,16 @@ void Spell::EffectDummy(SpellEffectIndex effIdx)
                 {
                     if (unitTarget && m_casterUnit)
                     {
-                        m_casterUnit->Kill(unitTarget, nullptr);
+                        ObjectGuid const targetGuid = unitTarget->GetObjectGuid();
+                        m_casterUnit->m_Events.AddLambdaEventAtOffset(
+                            [caster = m_casterUnit, targetGuid]
+                            {
+                                if (!caster->IsInWorld())
+                                    return;
+                                if (Unit* target = caster->GetMap()->GetUnit(targetGuid))
+                                    if (target->IsAlive())
+                                        caster->Kill(target, nullptr);
+                            }, 500);
                     }
                     return;
                 }
@@ -3212,7 +3221,7 @@ ObjectGuid Unit::EffectSummonPet(uint32 spellId, uint32 petEntry, uint32 petLeve
     newSummon->SetOwnerGuid(GetObjectGuid());
     newSummon->SetCreatorGuid(GetObjectGuid());
     newSummon->SetFactionTemplateId(GetFactionTemplateId());
-    newSummon->SetUInt32Value(UNIT_FIELD_PET_NAME_TIMESTAMP, uint32(time(nullptr)));
+    newSummon->SetUInt32Value(UNIT_FIELD_PET_NAME_TIMESTAMP, uint32(sWorld.GetGameTime()));
     newSummon->SetUInt32Value(UNIT_FIELD_PETEXPERIENCE, 0);
     newSummon->SetUInt32Value(UNIT_FIELD_PETNEXTLEVELEXP, 1000);
     newSummon->SetUInt32Value(UNIT_CREATED_BY_SPELL, spellId);
@@ -4535,7 +4544,7 @@ void Spell::EffectSanctuary(SpellEffectIndex effIdx)
 
     unitTarget->InterruptSpellsCastedOnMe(true);
     unitTarget->InterruptAttacksOnMe(0.0f, guardCheck);
-    unitTarget->m_lastSanctuaryTime = WorldTimer::getMSTime();
+    unitTarget->m_lastSanctuaryTime = sWorld.GetCurrentMSTime();
 
     // Flask of Petrification does not cause mobs to stop attacking.
     if (m_spellInfo->IsFitToFamily<SPELLFAMILY_ROGUE, CF_ROGUE_VANISH>())
@@ -4728,9 +4737,10 @@ void Spell::EffectStuck(SpellEffectIndex /*effIdx*/)
     if (pTarget->IsTaxiFlying())
         return;
 
-    // TP to last overmap position
-    if (fabs(pTarget->m_lastSafePosition.x) > 0.1f && fabs(pTarget->m_lastSafePosition.y) > 0.1f)
-        pTarget->TeleportTo(pTarget->GetMapId(), pTarget->m_lastSafePosition.x, pTarget->m_lastSafePosition.y, pTarget->m_lastSafePosition.z - 2.0f + 0.7f, pTarget->m_lastSafePosition.o);
+    // The stock client delegates effect 84 to the server. Return to
+    // the saved inn and start the normal Hearthstone cooldown instead
+    // of reusing a last-safe position that may still be obstructed.
+    pTarget->TeleportToHomebind(TELE_TO_SPELL);
 }
 
 void Spell::EffectSummonPlayer(SpellEffectIndex /*effIdx*/)

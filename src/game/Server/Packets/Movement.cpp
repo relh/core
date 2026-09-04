@@ -9,7 +9,7 @@ void WorldPackets::Movement::MovementPacket::ReadFromWorldPacket(WorldPacket& re
 
 void WorldPackets::Movement::MoveTimeSkipped::ReadFromWorldPacket(WorldPacket& recv_data)
 {
-    recv_data >> guid;
+    recv_data >> guid.ReadAsPacked();
     recv_data >> lag;
 }
 

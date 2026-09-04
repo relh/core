@@ -707,8 +707,8 @@ bool ChatHandler::HandleEventInfoCommand(char* args)
     std::string endTimeStr = TimeToTimestampStr(eventData.end);
 
     uint32 delay = sGameEventMgr.NextCheck(event_id);
-    time_t nextTime = time(nullptr) + delay;
-    std::string nextStr = nextTime >= eventData.start && nextTime < eventData.end ? TimeToTimestampStr(time(nullptr) + delay) : "-";
+    time_t nextTime = sWorld.GetGameTime() + delay;
+    std::string nextStr = nextTime >= eventData.start && nextTime < eventData.end ? TimeToTimestampStr(sWorld.GetGameTime() + delay) : "-";
 
     std::string occurenceStr = secsToTimeString(eventData.occurence * MINUTE);
     std::string lengthStr = secsToTimeString(eventData.length * MINUTE);
@@ -1955,7 +1955,7 @@ bool ChatHandler::HandleListMapsCommand(char* /*args*/)
 {
     SendSysMessage("Listing all currently created maps:");
     for (auto const& itr : sMapMgr.Maps())
-        PSendSysMessage("%u-%u - %s - Players %u - Created %s ago", itr.first.nMapId, itr.first.nInstanceId, playerLink(itr.second->GetMapName()).c_str(), itr.second->GetPlayersCountExceptGMs(), secsToTimeString(time(nullptr) - itr.second->GetCreateTime(), true).c_str());
+        PSendSysMessage("%u-%u - %s - Players %u - Created %s ago", itr.first.nMapId, itr.first.nInstanceId, playerLink(itr.second->GetMapName()).c_str(), itr.second->GetPlayersCountExceptGMs(), secsToTimeString(sWorld.GetGameTime() - itr.second->GetCreateTime(), true).c_str());
 
     return true;
 }

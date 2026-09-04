@@ -187,6 +187,12 @@ int Master::Run()
         }));
     }
 
+    bool const npcBackstoriesEnabled =
+        sConfig.GetBoolDefault("Coworld.NpcBackstories", false);
+    sWorld.SetNpcBackstoriesEnabled(npcBackstoriesEnabled);
+    sLog.Out(LOG_BASIC, LOG_LVL_BASIC, "Coworld NPC backstories: %s.",
+        npcBackstoriesEnabled ? "enabled" : "disabled");
+
     // Initialize the World
     sWorld.SetInitialWorldSettings();
 

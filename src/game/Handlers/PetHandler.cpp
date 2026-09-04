@@ -20,6 +20,7 @@
  */
 
 #include "Common.h"
+#include "World.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include "ObjectMgr.h"
@@ -341,7 +342,7 @@ void WorldSession::HandlePetRename(WorldPackets::Pet::PetRename const& packet)
     CharacterDatabase.PExecute("UPDATE `character_pet` SET `name` = '%s', `renamed` = '1' WHERE `owner_guid` = '%u' AND `id` = '%u'", safeName.c_str(), _player->GetGUIDLow(), pet->GetCharmInfo()->GetPetNumber());
     CharacterDatabase.CommitTransaction();
 
-    pet->SetUInt32Value(UNIT_FIELD_PET_NAME_TIMESTAMP, uint32(time(nullptr)));
+    pet->SetUInt32Value(UNIT_FIELD_PET_NAME_TIMESTAMP, uint32(sWorld.GetGameTime()));
 }
 
 void WorldSession::HandlePetAbandon(WorldPackets::Pet::PetAbandon const& packet)
@@ -441,7 +442,7 @@ void WorldSession::HandlePetUnlearnOpcode(WorldPackets::Pet::PetUnlearn const& p
     // relearn pet passives
     pet->LearnPetPassives();
 
-    pet->m_resetTalentsTime = time(nullptr);
+    pet->m_resetTalentsTime = sWorld.GetGameTime();
     pet->m_resetTalentsCost = cost;
     GetPlayer()->ModifyMoney(-(int32)cost);
 

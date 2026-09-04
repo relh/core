@@ -825,5 +825,9 @@ enum OpcodesList
     SMSG_CHARACTER_PROFILE                 = 824,
     SMSG_CHARACTER_PROFILE_REALM_CONNECTED = 825,
     SMSG_DEFENSE_MESSAGE                   = 827,
-    NUM_MSG_TYPES                          = 828
+    CMSG_COWORLD_CLASS_DECK_HELLO          = 828,
+    SMSG_COWORLD_CLASS_DECK_STATE          = 829,
+    CMSG_COWORLD_CLASS_DECK_CHOOSE         = 830,
+    SMSG_COWORLD_CLASS_DECK_RESULT         = 831,
+    NUM_MSG_TYPES                          = 832
 };

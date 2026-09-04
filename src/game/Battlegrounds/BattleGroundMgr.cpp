@@ -148,7 +148,7 @@ GroupQueueInfo* BattleGroundQueue::AddGroup(Player* leader, Group* grp, BattleGr
     GroupQueueInfo* ginfo = new GroupQueueInfo;
     ginfo->bgTypeId                  = bgTypeId;
     ginfo->isInvitedToBgInstanceGuid = 0;
-    ginfo->joinTime                  = WorldTimer::getMSTime();
+    ginfo->joinTime                  = sWorld.GetCurrentMSTime();
     ginfo->removeInviteTime          = 0;
     ginfo->groupTeam                 = leader->GetTeam();
     ginfo->desiredInstanceId         = instanceId;
@@ -260,7 +260,7 @@ GroupQueueInfo* BattleGroundQueue::AddGroup(Player* leader, Group* grp, BattleGr
 
 void BattleGroundQueue::PlayerInvitedToBgUpdateAverageWaitTime(GroupQueueInfo* ginfo, BattleGroundBracketId bracketId)
 {
-    uint32 timeInQueue = WorldTimer::getMSTimeDiff(ginfo->joinTime, WorldTimer::getMSTime());
+    uint32 timeInQueue = WorldTimer::getMSTimeDiff(ginfo->joinTime, sWorld.GetCurrentMSTime());
     uint8 teamIndex = BG_TEAM_ALLIANCE;                    //default set to BG_TEAM_ALLIANCE - or non rated arenas!
 
     if (ginfo->groupTeam == HORDE)
@@ -407,7 +407,7 @@ bool BattleGroundQueue::InviteGroupToBG(GroupQueueInfo* ginfo, BattleGround* bg,
         BattleGroundQueueTypeId bgQueueTypeId = BattleGroundMgr::BgQueueTypeId(bgTypeId);
         BattleGroundBracketId bracketId = bg->GetBracketId();
 
-        ginfo->removeInviteTime = WorldTimer::getMSTime() + INVITE_ACCEPT_WAIT_TIME;
+        ginfo->removeInviteTime = sWorld.GetCurrentMSTime() + INVITE_ACCEPT_WAIT_TIME;
 
         // loop through the players
         for (GroupQueueInfoPlayers::iterator itr = ginfo->players.begin(); itr != ginfo->players.end(); ++itr)
@@ -565,7 +565,7 @@ bool BattleGroundQueue::CheckPremadeMatch(BattleGroundBracketId bracketId, uint3
     // this could be 2 cycles but i'm checking only first team in queue - it can cause problem -
     // if first is invited to BG and seconds timer expired, but we can ignore it, because players have only 80 seconds to click to enter bg
     // and when they click or after 80 seconds the queue info is removed from queue
-    uint32 time_before = WorldTimer::getMSTime() - sWorld.getConfig(CONFIG_UINT32_BATTLEGROUND_PREMADE_GROUP_WAIT_FOR_MATCH);
+    uint32 time_before = sWorld.GetCurrentMSTime() - sWorld.getConfig(CONFIG_UINT32_BATTLEGROUND_PREMADE_GROUP_WAIT_FOR_MATCH);
     for (uint32 i = 0; i < BG_TEAMS_COUNT; i++)
     {
         if (!m_queuedGroups[bracketId][BG_QUEUE_PREMADE_ALLIANCE + i].empty())
@@ -633,7 +633,7 @@ void BattleGroundQueue::RemoveOfflinePlayer()
     {
         bool remove = false;
 
-        if (!itr->second.online && WorldTimer::getMSTimeDiffToNow(itr->second.lastOnlineTime) > OFFLINE_BG_QUEUE_TIME)
+        if (!itr->second.online && WorldTimer::getMSTimeDiff(itr->second.lastOnlineTime, sWorld.GetCurrentMSTime()) > OFFLINE_BG_QUEUE_TIME)
         {
             remove = true;
         }
@@ -1741,7 +1741,7 @@ void BattleGroundMgr::PlayerLoggedIn(Player* player)
             uint32 queueSlot = player->AddBattleGroundQueueId(BattleGroundQueueTypeId(i));
 
             BattleGround* bg = GetBattleGroundTemplate(groupInfo.bgTypeId);
-            player->GetSession()->SendPacket(BuildBattleGroundStatusPacket(bg, queueSlot, STATUS_WAIT_QUEUE, avgTime, WorldTimer::getMSTimeDiff(groupInfo.joinTime, WorldTimer::getMSTime())));
+            player->GetSession()->SendPacket(BuildBattleGroundStatusPacket(bg, queueSlot, STATUS_WAIT_QUEUE, avgTime, WorldTimer::getMSTimeDiff(groupInfo.joinTime, sWorld.GetCurrentMSTime())));
 
             if (groupInfo.isInvitedToBgInstanceGuid)
             {
@@ -1749,7 +1749,7 @@ void BattleGroundMgr::PlayerLoggedIn(Player* player)
 
                 // create automatic remove events
                 BGQueueRemoveEvent* removeEvent = new BGQueueRemoveEvent(player->GetObjectGuid(), groupInfo.isInvitedToBgInstanceGuid, bg->GetTypeID(), BattleGroundQueueTypeId(i), groupInfo.removeInviteTime);
-                uint32 offset = (WorldTimer::getMSTime() > groupInfo.removeInviteTime) ? 1 : WorldTimer::getMSTimeDiff(WorldTimer::getMSTime(), groupInfo.removeInviteTime);
+                uint32 offset = (sWorld.GetCurrentMSTime() > groupInfo.removeInviteTime) ? 1 : WorldTimer::getMSTimeDiff(sWorld.GetCurrentMSTime(), groupInfo.removeInviteTime);
                 player->m_Events.AddEvent(removeEvent, player->m_Events.CalculateTime(offset));
             }
         }
@@ -1779,7 +1779,7 @@ void BattleGroundQueue::PlayerLoggedOut(ObjectGuid guid)
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "BattleGroundQueue: couldn't find for remove: %s", guid.GetString().c_str());
         return;
     }
-    itr->second.lastOnlineTime  = WorldTimer::getMSTime();
+    itr->second.lastOnlineTime  = sWorld.GetCurrentMSTime();
     itr->second.online          = false;
 }
 

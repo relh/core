@@ -31,6 +31,7 @@ class WorldSession;
 
 #define GOSSIP_MAX_MENU_ITEMS       32                      // client supports showing max 32 items
 #define DEFAULT_GOSSIP_MESSAGE      0xffffff
+#define COWORLD_NPC_BACKSTORY_SENDER 0x434F5742
 
 enum Gossip_Option
 {

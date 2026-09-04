@@ -296,7 +296,7 @@ void ChargeMovementGenerator<T>::ComputePath(T& attacker, Unit& victim)
         // 1. Time for stun aura to be applied (spell batching)
         // 2. Time client has been moving for since last packet
         // 3. Time it will take for him to ACK the root (latency)
-        m_extrapolateDelay += (WorldTimer::getMSTime() - victimPlayer->m_movementInfo.stime);
+        m_extrapolateDelay += (sWorld.GetCurrentMSTime() - victimPlayer->m_movementInfo.stime);
 
 #if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_8_4
         // latency is not part of ping packet in older clients so we cant use it

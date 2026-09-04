@@ -5413,7 +5413,9 @@ void ObjectMgr::LoadGroups()
     // TODO: maybe delete from the DB before loading in this case
     for (GroupMap::iterator itr = m_GroupMap.begin(); itr != m_GroupMap.end();)
     {
-        if ((itr->second->GetMembersCount() < 2) || (itr->second->GetMembersCount() > 40))
+        if ((itr->second->GetMembersCount() < 2) ||
+            (itr->second->GetMembersCount() > 40) ||
+            (sWorld.IsGuildWarsDrainRealm() && itr->second->GetTeam() == TEAM_CROSSFACTION))
         {
             itr->second->Disband();
             delete itr->second;
@@ -6787,6 +6789,56 @@ struct SQLWorldLoader : public SQLStorageLoaderBase<SQLWorldLoader, SQLStorage>
     }
 };
 
+void ObjectMgr::LoadNpcBackstories()
+{
+    m_npcBackstoryTextIds.clear();
+    if (!sWorld.IsNpcBackstoriesEnabled())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "\n>> NPC backstories disabled");
+        return;
+    }
+
+    std::unique_ptr<QueryResult> result(WorldDatabase.Query(
+        "SELECT `creature_entry`, `npc_text_id` "
+        "FROM `coworld_npc_backstory` ORDER BY `creature_entry`"));
+    if (!result)
+    {
+        sLog.Out(LOG_DBERROR, LOG_LVL_MINIMAL,
+            "Coworld.NpcBackstories is enabled but coworld_npc_backstory is empty or missing.");
+        MANGOS_ASSERT(result);
+    }
+
+    do
+    {
+        Field* fields = result->Fetch();
+        uint32 const creatureEntry = fields[0].GetUInt32();
+        uint32 const npcTextId = fields[1].GetUInt32();
+        if (!GetCreatureTemplate(creatureEntry) || !GetNpcText(npcTextId))
+        {
+            sLog.Out(LOG_DBERROR, LOG_LVL_MINIMAL,
+                "Invalid NPC backstory mapping creature=%u npc_text=%u.",
+                creatureEntry, npcTextId);
+            MANGOS_ASSERT(false);
+        }
+        auto const inserted = m_npcBackstoryTextIds.emplace(creatureEntry, npcTextId);
+        if (!inserted.second)
+        {
+            sLog.Out(LOG_DBERROR, LOG_LVL_MINIMAL,
+                "Duplicate NPC backstory mapping for creature=%u.", creatureEntry);
+            MANGOS_ASSERT(false);
+        }
+    } while (result->NextRow());
+
+    if (!GetBroadcastTextLocale(16777215))
+    {
+        sLog.Out(LOG_DBERROR, LOG_LVL_MINIMAL,
+            "NPC backstory menu label broadcast_text 16777215 is missing.");
+        MANGOS_ASSERT(false);
+    }
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "\n>> Loaded %u NPC backstories",
+        uint32(m_npcBackstoryTextIds.size()));
+}
+
 void ObjectMgr::LoadNPCText()
 {
     m_NpcTextMap.clear();                           // need for reload case
@@ -6991,7 +7043,7 @@ public:
 //not very fast function but it is called only once a day, or on starting-up
 void ObjectMgr::ReturnOrDeleteOldMails(bool serverUp)
 {
-    time_t basetime = time(nullptr);
+    time_t basetime = sWorld.GetGameTime();
     sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "Returning mails current time: hour: %d, minute: %d, second: %d ", localtime(&basetime)->tm_hour, localtime(&basetime)->tm_min, localtime(&basetime)->tm_sec);
     //delete all old mails without item and without body immediately, if starting server
     if (!serverUp)

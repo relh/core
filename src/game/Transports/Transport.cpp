@@ -180,7 +180,7 @@ bool ShipTransport::TeleportTransport(uint32 newMapid, float x, float y, float z
                 // The client still shows the correct loading screen when one is needed (Grom'Gol-Undercity)
                 if (newMapid == player->GetMapId())
                 {
-                    player->m_movementInfo.SetAsServerSide();
+                    player->m_movementInfo.SetAsServerSide(sWorld.GetCurrentMSTime());
                     player->TeleportPositionRelocation(destX, destY, destZ, destO);
                     if (newInstanceId != player->GetInstanceId())
                         sMapMgr.ScheduleInstanceSwitch(player, newInstanceId);
@@ -436,7 +436,7 @@ void ElevatorTransport::Update(uint32 /*update_diff*/, uint32 /*time_diff*/)
 
 uint32 GenericTransport::GetTimeSinceCreation()
 {
-    return WorldTimer::getMSTimeDiffToNow(m_creationTime);
+    return WorldTimer::getMSTimeDiff(m_creationTime, sWorld.GetCurrentMSTime());
 }
 
 void GenericTransport::UpdatePosition(float x, float y, float z, float o)

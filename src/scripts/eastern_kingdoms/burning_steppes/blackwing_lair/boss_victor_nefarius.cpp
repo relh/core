@@ -280,8 +280,10 @@ struct boss_victor_nefariusAI : ScriptedAI
 
             uint32 scepterRunResult = FAIL;
 
-            // Check for successful Scepter Shard Run
-            if (scepterRun)
+            // The active flag can be restored before an expired
+            // persisted timer receives its next update. The shard run
+            // succeeds only while its five-hour budget remains.
+            if (scepterRun && scepterRunTime > 0)
             {
                 // Check if still has time left
                 if (Player* scepterChampion = m_creature->GetMap()->GetPlayer(m_pInstance->GetData64(DATA_SCEPTER_CHAMPION)))

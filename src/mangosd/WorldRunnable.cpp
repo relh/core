@@ -32,6 +32,7 @@
 #include "BattleGroundMgr.h"
 #include "Master.h"
 #include "TimePeriod.h"
+#include "Config/Config.h"
 
 #include "Database/DatabaseEnv.h"
 
@@ -49,6 +50,15 @@ void WorldRunnable::operator()()
     // Init new SQL thread for the world database
     WorldDatabase.ThreadStart();                                // let thread do safe mySQL requests (one connection call enough)
     sWorld.InitResultQueue();
+
+    int32 configuredSimulationTimeScale = sConfig.GetIntDefault("Coworld.SimulationTimeScale", 1);
+    uint32 simulationTimeScale = 1;
+    if (configuredSimulationTimeScale >= 1 && configuredSimulationTimeScale <= 10)
+        simulationTimeScale = uint32(configuredSimulationTimeScale);
+    else
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "Invalid Coworld.SimulationTimeScale %d; using 1.", configuredSimulationTimeScale);
+    sWorld.SetSimulationTimeScale(simulationTimeScale);
+    sLog.Out(LOG_BASIC, LOG_LVL_BASIC, "Coworld simulation time scale: %ux.", simulationTimeScale);
 
     Master::ArmAnticrash();
     uint32 anticrashRearmTimer = 0;
@@ -91,7 +101,11 @@ void WorldRunnable::operator()()
                 anticrashRearmTimer -= diff;
         }
 
-        sWorld.Update(diff);
+        if (sWorld.GetSimulationTimeScale() == 1)
+            sWorld.Update(diff, diff);
+        else
+            sWorld.Update(
+                sWorld.ScaleSimulationDuration(diff), diff);
 
         // diff is the actual time since last tick
         // updateTime is the actual time taken to update this round

@@ -38,10 +38,13 @@
 #include "Group.h"
 #include "AccountMgr.h"
 #include "AuctionHouseMgr.h"
+#include "MarketStallMgr.h"
 #include "ObjectMgr.h"
+#include "ClassDeckMgr.h"
 #include "CreatureEventAIMgr.h"
 #include "Guild.h"
 #include "GuildMgr.h"
+#include "SovereigntyMgr.h"
 #include "SpellMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
@@ -124,7 +127,6 @@ World::World():
     m_timeZoneOffset(0),
     m_wowPatch(WOW_PATCH_102),
     m_defaultDbcLocale(LOCALE_enUS),
-    m_timeRate(1.0f),
     m_canProcessAsyncPackets(false)
 {
     m_gameDay = (m_gameTime + m_timeZoneOffset) / DAY;
@@ -152,7 +154,9 @@ World::World():
     for (bool & value : m_configBoolValues)
         value = false;
 
-    m_timeRate = 1.0f;
+    m_currentMSTime = WorldTimer::getMSTime();
+    m_currentTime = std::chrono::time_point_cast<std::chrono::milliseconds>(Clock::now());
+    m_shutdownWallTime = m_gameTime;
     m_charDbWorkerThread    = nullptr;
 }
 
@@ -1349,7 +1353,9 @@ void World::SetInitialWorldSettings()
     // No SQL injection as values are treated as integers
 
     // not send custom type REALM_FFA_PVP to realm list
-    uint32 server_type = IsFFAPvPRealm() ? REALM_TYPE_PVP : getConfig(CONFIG_UINT32_GAME_TYPE);
+    uint32 server_type = (IsFFAPvPRealm() || IsGuildWarsDrainRealm())
+        ? REALM_TYPE_PVP
+        : getConfig(CONFIG_UINT32_GAME_TYPE);
     uint32 realm_zone = getConfig(CONFIG_UINT32_REALM_ZONE);
     LoginDatabase.PExecute("UPDATE `realmlist` SET `icon` = %u, `timezone` = %u WHERE `id` = '%u'", server_type, realm_zone, realmID);
 
@@ -1499,6 +1505,9 @@ void World::SetInitialWorldSettings()
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading Creature templates...");
     sObjectMgr.LoadCreatureTemplates();
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading NPC backstories...");
+    sObjectMgr.LoadNpcBackstories(); // after creature templates and NPC text
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading SpellsScriptTarget...");
     sSpellMgr.LoadSpellScriptTarget();                      // must be after LoadCreatureTemplates and LoadGameobjectInfo
@@ -1670,6 +1679,7 @@ void World::SetInitialWorldSettings()
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading Trainers...");
     sObjectMgr.LoadTrainerTemplates();                      // must be after load CreatureTemplate
     sObjectMgr.LoadTrainers();                              // must be after load CreatureTemplate, TrainerTemplate
+    sClassDeckMgr.LoadCatalog();                            // must be after trainer services
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading Waypoint scripts...");          // before loading from creature_movement
     sScriptMgr.LoadCreatureMovementScripts();
@@ -1704,6 +1714,8 @@ void World::SetInitialWorldSettings()
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading Guilds...");
     sGuildMgr.LoadGuilds();
+
+    sSovereigntyMgr.Load();
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading Petitions...");
     sGuildMgr.LoadPetitions();
@@ -1772,6 +1784,9 @@ void World::SetInitialWorldSettings()
     m_gameTime = time(nullptr);
     m_startTime = m_gameTime;
     m_gameDay = (m_gameTime + m_timeZoneOffset) / DAY;
+    m_currentMSTime = WorldTimer::getMSTime();
+    m_currentTime = std::chrono::time_point_cast<std::chrono::milliseconds>(Clock::now());
+    m_shutdownWallTime = m_gameTime;
 
     tm local;
     time_t curr;
@@ -1824,6 +1839,7 @@ void World::SetInitialWorldSettings()
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Starting Game Event system...");
     uint32 nextGameEvent = sGameEventMgr.Initialize();
     m_timers[WUPDATE_EVENTS].SetInterval(nextGameEvent);    //depend on next event
+    sMarketStallMgr.Load();
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading disabled spells");
@@ -1978,10 +1994,10 @@ void World::ProcessAsyncPackets()
 }
 
 // Update the World !
-void World::Update(uint32 diff)
+void World::Update(uint32 diff, uint32 operationalWallDiff)
 {
-    m_currentMSTime = WorldTimer::getMSTime();
-    m_currentTime = std::chrono::time_point_cast<std::chrono::milliseconds>(Clock::now());
+    m_currentMSTime += diff;
+    m_currentTime += std::chrono::milliseconds(diff);
     m_currentDiff = diff;
 
     // Update the different timers
@@ -1998,6 +2014,7 @@ void World::Update(uint32 diff)
 
     // Update mass mailer tasks if any
     sMassMailMgr.Update();
+    sSovereigntyMgr.Update(diff);
 
     // <ul><li> Handle auctions when the timer has passed
     if (m_timers[WUPDATE_AUCTIONS].Passed())
@@ -2005,6 +2022,7 @@ void World::Update(uint32 diff)
         m_timers[WUPDATE_AUCTIONS].Reset();
 
         sAuctionHouseBotMgr.Update();
+        sMarketStallMgr.Update();
         // Handle expired auctions
         sAuctionMgr.Update();
     }
@@ -2017,7 +2035,9 @@ void World::Update(uint32 diff)
 
         // <li> Handle session updates
         uint32 updateSessionsTime = WorldTimer::getMSTime();
-        UpdateSessions(diff);
+        // Keep admission and packet IO live on every outer update.
+        // Disconnected-session expiry follows unscaled wall time.
+        UpdateSessions(operationalWallDiff);
         updateSessionsTime = WorldTimer::getMSTimeDiffToNow(updateSessionsTime);
         if (getConfig(CONFIG_UINT32_PERFLOG_SLOW_SESSIONS_UPDATE) && updateSessionsTime > getConfig(CONFIG_UINT32_PERFLOG_SLOW_SESSIONS_UPDATE))
             sLog.Out(LOG_PERFORMANCE, LOG_LVL_MINIMAL, "Update sessions: %ums", updateSessionsTime);
@@ -2666,17 +2686,19 @@ bool World::RemoveBanAccount(BanMode mode, std::string const& source, std::strin
 // Update the game time
 void World::_UpdateGameTime()
 {
-    // update the time
-    time_t thisTime = time(nullptr);
-    uint32 elapsed = uint32(thisTime - m_gameTime);
-    m_gameTime = thisTime;
+    // Gameplay time follows the virtual world clock. Operational
+    // shutdown deadlines deliberately remain real wall time.
+    m_gameTime = Clock::to_time_t(m_currentTime);
     m_gameDay = (m_gameTime + m_timeZoneOffset) / DAY;
+    time_t const wallTime = time(nullptr);
+    uint32 const wallElapsed = uint32(wallTime - m_shutdownWallTime);
+    m_shutdownWallTime = wallTime;
 
     // if there is a shutdown timer
-    if (!m_stopEvent && m_ShutdownTimer > 0 && elapsed > 0)
+    if (!m_stopEvent && m_ShutdownTimer > 0 && wallElapsed > 0)
     {
         // ... and it is overdue, stop the world (set m_stopEvent)
-        if (m_ShutdownTimer <= elapsed)
+        if (m_ShutdownTimer <= wallElapsed)
         {
             if (!(m_ShutdownMask & SHUTDOWN_MASK_IDLE) || GetActiveAndQueuedSessionCount() == 0)
                 m_stopEvent = true;                         // exist code already set
@@ -2686,7 +2708,7 @@ void World::_UpdateGameTime()
         // ... else decrease it and if necessary display a shutdown countdown to the users
         else
         {
-            m_ShutdownTimer -= elapsed;
+            m_ShutdownTimer -= wallElapsed;
 
             ShutdownMsg();
         }
@@ -3238,5 +3260,5 @@ uint32 World::GetDelayUntilNextSpellBatchingInterval()
     if (!getConfig(CONFIG_UINT32_SPELL_EFFECT_DELAY))
         return 0;
 
-    return (getConfig(CONFIG_UINT32_SPELL_EFFECT_DELAY) - (WorldTimer::getMSTime() % getConfig(CONFIG_UINT32_SPELL_EFFECT_DELAY)));
+    return (getConfig(CONFIG_UINT32_SPELL_EFFECT_DELAY) - (GetCurrentMSTime() % getConfig(CONFIG_UINT32_SPELL_EFFECT_DELAY)));
 }

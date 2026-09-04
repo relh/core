@@ -859,8 +859,11 @@ float TerrainInfo::GetHeightStatic(float x, float y, float z, bool useVmaps/*=tr
         {
             // we have mapheight and vmapheight and must select more appropriate
 
-            // we are already under the surface or vmap height above map heigt
-            if (z + 1.0f  < mapHeight || vmapHeight > mapHeight)
+            // Ignore the same few-pixel terrain precision wobble that
+            // UpdateGroundPositionZ cushions by 0.05f. A unit genuinely
+            // below that tolerance still belongs on the vmap floor.
+            constexpr float mapHeightTolerance = 0.05f;
+            if (z + mapHeightTolerance < mapHeight || vmapHeight > mapHeight)
                 return vmapHeight;
             return mapHeight;                               // better use .map surface height
         }

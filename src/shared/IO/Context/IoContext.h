@@ -2,7 +2,10 @@
 #define MANGOS_IO_IOCONTEXT_H
 
 #include <atomic>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <vector>
 #include "./AsyncIoOperation.h"
 
 #if defined(WIN32)
@@ -54,6 +57,7 @@ namespace IO
         IO::Native::FileHandle GetUnixEpollDescriptor() const { return m_epollDescriptor; }
 #elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
         IO::Native::FileHandle GetKqueueDescriptor() const { return m_kqueueDescriptor; }
+        void PostAfterCurrentEventBatch(std::function<void()> callback);
 #endif
 
 #if defined(WIN32)
@@ -81,6 +85,8 @@ namespace IO
         explicit IoContext(IO::Native::FileHandle epollDescriptor, IO::Native::FileHandle contextSwitchEventFd);
 #elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
         IO::Native::FileHandle const m_kqueueDescriptor;
+        std::mutex m_afterEventBatchMutex;
+        std::vector<std::function<void()>> m_afterEventBatchCallbacks;
         explicit IoContext(IO::Native::FileHandle kqueueDescriptor);
 #endif
     };

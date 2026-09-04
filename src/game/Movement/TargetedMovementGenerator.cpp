@@ -164,7 +164,7 @@ void ChaseMovementGenerator<T>::_setTargetLocation(T &owner)
         {
             float o;
             if (!(sWorld.getConfig(CONFIG_BOOL_ENABLE_MOVEMENT_EXTRAPOLATION_PET) &&
-                i_target->ExtrapolateMovement(i_target->m_movementInfo, (WorldTimer::getMSTime() - i_target->m_movementInfo.stime) + 500, x, y, z, o)))
+                i_target->ExtrapolateMovement(i_target->m_movementInfo, (sWorld.GetCurrentMSTime() - i_target->m_movementInfo.stime) + 500, x, y, z, o)))
             {
                 i_target->GetPosition(x, y, z);
                 o = i_target->GetOrientation();
@@ -624,7 +624,7 @@ void FollowMovementGenerator<T>::_setTargetLocation(T &owner)
     {
         float o;
         if (!(sWorld.getConfig(CONFIG_BOOL_ENABLE_MOVEMENT_EXTRAPOLATION_PET) &&
-            i_target->ExtrapolateMovement(i_target->m_movementInfo, (WorldTimer::getMSTime() - i_target->m_movementInfo.stime) + 500, x, y, z, o)))
+            i_target->ExtrapolateMovement(i_target->m_movementInfo, (sWorld.GetCurrentMSTime() - i_target->m_movementInfo.stime) + 500, x, y, z, o)))
         {
             i_target->GetPosition(x, y, z);
             o = i_target->GetOrientation();

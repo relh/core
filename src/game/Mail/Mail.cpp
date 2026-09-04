@@ -313,7 +313,7 @@ void MailDraft::SendMailTo(MailReceiver const& receiver, MailSender const& sende
 
     uint32 mailId = sObjectMgr.GenerateMailID();
 
-    time_t deliver_time = time(nullptr) + deliver_delay;
+    time_t deliver_time = sWorld.GetGameTime() + deliver_delay;
 
     if (!expire_delay)
     {

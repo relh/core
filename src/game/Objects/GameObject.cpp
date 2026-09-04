@@ -109,6 +109,18 @@ GameObject::~GameObject()
     MANGOS_ASSERT(m_spellDynObjects.empty());
 }
 
+time_t GameObject::GetRespawnTimeEx() const
+{
+    time_t const now = sWorld.GetGameTime();
+    return m_respawnTime > now ? m_respawnTime : now;
+}
+
+void GameObject::SetRespawnTime(time_t respawn)
+{
+    m_respawnTime = respawn > 0 ? sWorld.GetGameTime() + respawn : 0;
+    m_respawnDelayTime = respawn > 0 ? uint32(respawn) : 0;
+}
+
 GameObject* GameObject::CreateGameObject(uint32 entry)
 {
     GameObjectInfo const* goinfo = sObjectMgr.GetGameObjectTemplate(entry);
@@ -138,7 +150,7 @@ void GameObject::AddToWorld()
         AIM_Initialize();
 
     if (sWorld.getConfig(CONFIG_UINT32_SPELL_PROC_DELAY))
-        m_procsUpdateTimer = sWorld.getConfig(CONFIG_UINT32_SPELL_PROC_DELAY) - (WorldTimer::getMSTime() % sWorld.getConfig(CONFIG_UINT32_SPELL_PROC_DELAY));
+        m_procsUpdateTimer = sWorld.getConfig(CONFIG_UINT32_SPELL_PROC_DELAY) - (sWorld.GetCurrentMSTime() % sWorld.getConfig(CONFIG_UINT32_SPELL_PROC_DELAY));
 }
 
 void GameObject::AIM_Initialize()
@@ -217,7 +229,7 @@ bool GameObject::Create(uint32 guidlow, uint32 name_id, Map* map, float x, float
     SetObjectScale(goinfo->size);
 
 #if SUPPORTED_CLIENT_BUILD < CLIENT_BUILD_1_12_1
-    SetUInt32Value(GAMEOBJECT_TIMESTAMP, (uint32)time(nullptr));
+    SetUInt32Value(GAMEOBJECT_TIMESTAMP, (uint32)sWorld.GetGameTime());
 #endif
 
     SetFloatValue(GAMEOBJECT_POS_X, x);
@@ -352,14 +364,14 @@ void GameObject::Update(uint32 update_diff, uint32 /*p_time*/)
                     // Unit* owner = GetOwner();
                     // if (owner && ((Player*)owner)->IsInCombat())
                     if (GetGOInfo()->trap.startDelay)
-                        m_cooldownTime = time(nullptr) + GetGOInfo()->trap.startDelay;
+                        m_cooldownTime = sWorld.GetGameTime() + GetGOInfo()->trap.startDelay;
                     m_lootState = GO_READY;
                     break;
                 }
                 case GAMEOBJECT_TYPE_FISHINGNODE:
                 {
                     // fishing code (bobber ready)
-                    if (time(nullptr) > m_respawnTime - FISHING_BOBBER_READY_TIME)
+                    if (sWorld.GetGameTime() > m_respawnTime - FISHING_BOBBER_READY_TIME)
                     {
                         // splash bobber (bobber ready now)
                         if (Player* caster = ::ToPlayer(GetOwner()))
@@ -382,7 +394,7 @@ void GameObject::Update(uint32 update_diff, uint32 /*p_time*/)
                 {
                     if (m_goInfo->chest.chestRestockTime)
                     {
-                        if (m_cooldownTime <= time(nullptr))
+                        if (m_cooldownTime <= sWorld.GetGameTime())
                         {
                             m_cooldownTime = 0;
                             m_lootState = GO_READY;
@@ -404,7 +416,7 @@ void GameObject::Update(uint32 update_diff, uint32 /*p_time*/)
         {
             if (m_respawnTime > 0)                          // timer on
             {
-                if (m_respawnTime <= time(nullptr))            // timer expired
+                if (m_respawnTime <= sWorld.GetGameTime())            // timer expired
                 {
                     m_respawnTime = 0;
                     ClearAllUsesData();
@@ -464,7 +476,7 @@ void GameObject::Update(uint32 update_diff, uint32 /*p_time*/)
                 GameObjectInfo const* goInfo = GetGOInfo();
                 if (goInfo->type == GAMEOBJECT_TYPE_TRAP)
                 {
-                    if (m_cooldownTime >= time(nullptr))
+                    if (m_cooldownTime >= sWorld.GetGameTime())
                         return;
 
                     // traps
@@ -537,7 +549,7 @@ void GameObject::Update(uint32 update_diff, uint32 /*p_time*/)
                             CastSpell(ok, goInfo->trap.spellId, true, nullptr, nullptr, GetObjectGuid());
 
                         // use template cooldown if provided
-                        m_cooldownTime = time(nullptr) + (goInfo->trap.cooldown ? goInfo->trap.cooldown : uint32(4));
+                        m_cooldownTime = sWorld.GetGameTime() + (goInfo->trap.cooldown ? goInfo->trap.cooldown : uint32(4));
 
                         // count charges
                         if (goInfo->trap.charges > 0)
@@ -575,11 +587,11 @@ void GameObject::Update(uint32 update_diff, uint32 /*p_time*/)
             {
                 case GAMEOBJECT_TYPE_DOOR:
                 case GAMEOBJECT_TYPE_BUTTON:
-                    if (GetGOInfo()->GetAutoCloseTime() && (m_cooldownTime < time(nullptr)))
+                    if (GetGOInfo()->GetAutoCloseTime() && (m_cooldownTime < sWorld.GetGameTime()))
                         ResetDoorOrButton();
                     break;
                 case GAMEOBJECT_TYPE_GOOBER:
-                    if (m_cooldownTime < time(nullptr))
+                    if (m_cooldownTime < sWorld.GetGameTime())
                     {
                         RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
 
@@ -589,7 +601,7 @@ void GameObject::Update(uint32 update_diff, uint32 /*p_time*/)
                     break;
                 case GAMEOBJECT_TYPE_CHEST:
                 {
-                    if (m_cooldownTime > 0 && m_cooldownTime < time(nullptr))
+                    if (m_cooldownTime > 0 && m_cooldownTime < sWorld.GetGameTime())
                     {
                         SetLootState(GO_JUST_DEACTIVATED);
                     }
@@ -631,7 +643,7 @@ void GameObject::Update(uint32 update_diff, uint32 /*p_time*/)
                     // consumable confirmed to override chest restock
                     if (!m_goInfo->chest.consumable && m_goInfo->chest.chestRestockTime)
                     {
-                        m_cooldownTime = time(nullptr) + m_goInfo->chest.chestRestockTime;
+                        m_cooldownTime = sWorld.GetGameTime() + m_goInfo->chest.chestRestockTime;
                         SetLootState(GO_NOT_READY);
                         ForceValuesUpdateAtIndex(GAMEOBJECT_DYN_FLAGS);
                         return;
@@ -673,7 +685,7 @@ void GameObject::Update(uint32 update_diff, uint32 /*p_time*/)
 
             if (m_spawnedByDefault)
             {
-                m_respawnTime = time(nullptr) + ComputeRespawnDelay();
+                m_respawnTime = sWorld.GetGameTime() + ComputeRespawnDelay();
             }
             else
                 m_respawnTime = 0;
@@ -1004,7 +1016,7 @@ bool GameObject::LoadFromDB(uint32 guid, Map* map, bool force)
             m_respawnTime  = map->GetPersistentState()->GetGORespawnTime(GetGUIDLow());
 
             // ready to respawn
-            if (m_respawnTime && m_respawnTime <= time(nullptr))
+            if (m_respawnTime && m_respawnTime <= sWorld.GetGameTime())
             {
                 m_respawnTime = 0;
                 map->GetPersistentState()->SaveGORespawnTime(GetGUIDLow(), 0);
@@ -1117,7 +1129,7 @@ Player* GameObject::GetAffectingPlayer() const
 
 void GameObject::SaveRespawnTime()
 {
-    if (m_respawnTime > time(nullptr) && m_spawnedByDefault)
+    if (m_respawnTime > sWorld.GetGameTime() && m_spawnedByDefault)
         GetMap()->GetPersistentState()->SaveGORespawnTime(GetGUIDLow(), m_respawnTime);
 }
 
@@ -1172,7 +1184,7 @@ void GameObject::Respawn()
 {
     if (m_spawnedByDefault && m_respawnTime > 0)
     {
-        m_respawnTime = time(nullptr);
+        m_respawnTime = sWorld.GetGameTime();
         GetMap()->GetPersistentState()->SaveGORespawnTime(GetGUIDLow(), 0);
     }
 }
@@ -1379,7 +1391,7 @@ void GameObject::UseDoorOrButton(uint32 time_to_restore, bool alternative /* = f
     SwitchDoorOrButton(true, alternative);
     SetLootState(GO_ACTIVATED);
 
-    m_cooldownTime = time(nullptr) + time_to_restore;
+    m_cooldownTime = sWorld.GetGameTime() + time_to_restore;
 }
 
 void GameObject::SwitchDoorOrButton(bool activate, bool alternative /* = false */)
@@ -1603,7 +1615,7 @@ void GameObject::Use(Unit* user)
             else
                 SetGoState(GO_STATE_ACTIVE);
 
-            m_cooldownTime = time(nullptr) + time_to_restore;
+            m_cooldownTime = sWorld.GetGameTime() + time_to_restore;
 
             // cast this spell later if provided
             spellId = info->goober.spellId;

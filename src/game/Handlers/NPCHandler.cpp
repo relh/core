@@ -27,6 +27,7 @@
 #include "Opcodes.h"
 #include "Log.h"
 #include "ObjectMgr.h"
+#include "ClassDeckMgr.h"
 #include "SpellMgr.h"
 #include "Player.h"
 #include "GossipDef.h"
@@ -36,6 +37,7 @@
 #include "Spell.h"
 #include "Chat.h"
 #include "CharacterDatabaseCache.h"
+#include "MarketStallMgr.h"
 
 enum StableResultCode
 {
@@ -197,12 +199,26 @@ void WorldSession::SendTrainerList(ObjectGuid guid)
     bool can_learn_primary_prof = GetPlayer()->GetFreePrimaryProfessionPoints() > 0;
 
     uint32 count = 0;
+    bool classDeckClientRequiredLogged = false;
 
     if (cSpells)
     {
         for (const auto& itr : cSpells->spellList)
         {
             TrainerSpell const* tSpell = &itr.second;
+
+            if (sClassDeckMgr.IsCoveredService(_player->GetClass(), tSpell->spell))
+            {
+                if (!IsClassDeckCapable() && !classDeckClientRequiredLogged)
+                {
+                    sLog.Out(
+                        LOG_BASIC, LOG_LVL_BASIC,
+                        "CoworldClassDeckClientRequired guid=%u class=%u trainer=%u",
+                        _player->GetGUIDLow(), _player->GetClass(), unit->GetEntry());
+                    classDeckClientRequiredLogged = true;
+                }
+                continue;
+            }
 
             uint32 triggerSpell = sSpellMgr.GetSpellEntry(tSpell->spell)->EffectTriggerSpell[0];
 
@@ -222,6 +238,19 @@ void WorldSession::SendTrainerList(ObjectGuid guid)
         for (const auto& itr : tSpells->spellList)
         {
             TrainerSpell const* tSpell = &itr.second;
+
+            if (sClassDeckMgr.IsCoveredService(_player->GetClass(), tSpell->spell))
+            {
+                if (!IsClassDeckCapable() && !classDeckClientRequiredLogged)
+                {
+                    sLog.Out(
+                        LOG_BASIC, LOG_LVL_BASIC,
+                        "CoworldClassDeckClientRequired guid=%u class=%u trainer=%u",
+                        _player->GetGUIDLow(), _player->GetClass(), unit->GetEntry());
+                    classDeckClientRequiredLogged = true;
+                }
+                continue;
+            }
 
             uint32 triggerSpell = sSpellMgr.GetSpellEntry(tSpell->spell)->EffectTriggerSpell[0];
 
@@ -296,6 +325,12 @@ void WorldSession::HandleTrainerBuySpellOpcode(WorldPackets::Npc::TrainerBuySpel
         return;
     }
 
+    if (sClassDeckMgr.IsCoveredService(_player->GetClass(), packet.spellId))
+    {
+        SendTrainingFailure(packet.guid, packet.spellId, TRAIN_FAIL_UNAVAILABLE);
+        return;
+    }
+
     // Can't be learned, cheat? Or double learn with lags...
     if (_player->GetTrainerSpellState(trainer_spell) != TRAINER_SPELL_GREEN)
     {
@@ -360,6 +395,9 @@ void WorldSession::HandleGossipHelloOpcode(WorldPackets::Npc::GossipHello const&
     if (pCreature->IsSpiritGuide())
         pCreature->SendAreaSpiritHealerQueryOpcode(_player);
 
+    if (sMarketStallMgr.HandleGossipHello(_player, pCreature))
+        return;
+
     if (!sScriptMgr.OnGossipHello(_player, pCreature))
     {
         _player->PrepareGossipMenu(pCreature, pCreature->GetDefaultGossipMenuId());
@@ -369,6 +407,9 @@ void WorldSession::HandleGossipHelloOpcode(WorldPackets::Npc::GossipHello const&
 
 void WorldSession::HandleGossipSelectOptionOpcode(WorldPackets::Npc::GossipSelectOption const& packet)
 {
+    if (packet.gossipListId >=
+        _player->PlayerTalkClass->GetGossipMenu().MenuItemCount())
+        return;
     bool const isCoded = _player->PlayerTalkClass->GossipOptionCoded(packet.gossipListId);
     if (isCoded && packet.code.empty())
         return;  // coded option requires a code from the client
@@ -394,6 +435,21 @@ void WorldSession::HandleGossipSelectOptionOpcode(WorldPackets::Npc::GossipSelec
 
         if (!pCreature->HasExtraFlag(CREATURE_FLAG_EXTRA_NO_MOVEMENT_PAUSE))
             pCreature->PauseOutOfCombatMovement();
+
+        uint32 const backstoryTextId =
+            sObjectMgr.GetNpcBackstoryTextId(pCreature->GetEntry());
+        if (sWorld.IsNpcBackstoriesEnabled() && !isCoded &&
+            sender == COWORLD_NPC_BACKSTORY_SENDER &&
+            action == backstoryTextId && backstoryTextId)
+        {
+            _player->PlayerTalkClass->ClearMenus();
+            _player->PlayerTalkClass->SendGossipMenu(
+                backstoryTextId, pCreature->GetObjectGuid());
+            return;
+        }
+
+        if (sMarketStallMgr.HandleGossipSelect(_player, pCreature, sender, action, code))
+            return;
 
         if (!sScriptMgr.OnGossipSelect(_player, pCreature, sender, action, code))
             _player->OnGossipSelect(pCreature, packet.gossipListId);
@@ -498,6 +554,25 @@ void WorldSession::SendBindPoint(Creature* npc)
     // prevent set homebind to instances in any case
     if (GetPlayer()->GetMap()->Instanceable())
         return;
+
+    // Spell 3286 applies the bind before creating a Hearthstone. Its
+    // create-item effect is in slot 1, while CheckCast only protects
+    // a non-triggered create-item effect in slot 0.
+    // Preflight the authoritative operation so a missing Hearthstone
+    // and full inventory cannot still change the player's home.
+    static uint32 const HearthstoneItemId = 6948;
+    if (!GetPlayer()->HasItemCount(HearthstoneItemId, 1, true))
+    {
+        ItemPosCountVec destinations;
+        InventoryResult const result = GetPlayer()->CanStoreNewItem(
+            NULL_BAG, NULL_SLOT, destinations, HearthstoneItemId, 1);
+        if (result != EQUIP_ERR_OK)
+        {
+            GetPlayer()->SendEquipError(
+                result, nullptr, nullptr, 0, HearthstoneItemId);
+            return;
+        }
+    }
 
     // send spell for bind 3286 bind magic
     npc->CastSpell(_player, 3286, true);                    // Bind

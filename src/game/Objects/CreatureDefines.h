@@ -573,8 +573,7 @@ struct VendorItemData
 
 struct VendorItemCount
 {
-    explicit VendorItemCount(uint32 _item, uint32 _count, uint32 _restockDelay)
-        : itemId(_item), count(_count), restockDelay(_restockDelay), lastIncrementTime(time(nullptr)) {}
+    explicit VendorItemCount(uint32 _item, uint32 _count, uint32 _restockDelay);
 
     uint32 itemId;
     uint32 count;

@@ -304,7 +304,7 @@ void BattleGround::Update(uint32 diff)
         if (!GetInvitedCount(HORDE) && !GetInvitedCount(ALLIANCE))
             delete this;
         // update queue to avoid bg remaining indefinitely until player logs back in if he logs out after it pops
-        else if (GetStatus() <= STATUS_WAIT_JOIN && (GetBgMap()->GetCreateTime() + 2 * MINUTE) < time(nullptr))
+        else if (GetStatus() <= STATUS_WAIT_JOIN && (GetBgMap()->GetCreateTime() + 2 * MINUTE) < sWorld.GetGameTime())
             sBattleGroundMgr.ScheduleQueueUpdate(BattleGroundMgr::BgQueueTypeId(GetTypeID()), GetTypeID(), GetBracketId());
 
         return;
@@ -1598,7 +1598,7 @@ void BattleGround::SpawnBGCreature(ObjectGuid guid, BattleGroundCreatureSpawnMod
     if (mode == RESPAWN_FORCED)
     {
         obj->SetRespawnDelay(RESPAWN_2MINUTES);
-        if (obj->GetRespawnTime() > time(nullptr))
+        if (obj->GetRespawnTime() > sWorld.GetGameTime())
             obj->SetRespawnTime(1);
     }
     else if (mode == DESPAWN_FORCED)
@@ -1610,7 +1610,7 @@ void BattleGround::SpawnBGCreature(ObjectGuid guid, BattleGroundCreatureSpawnMod
     else if (mode == RESPAWN_START)
     {
         obj->SetRespawnDelay(RESPAWN_2MINUTES);
-        if (obj->GetRespawnTime() > time(nullptr))
+        if (obj->GetRespawnTime() > sWorld.GetGameTime())
             obj->SetRespawnTime(1);
     }
     else if (mode == RESPAWN_STOP)
@@ -1623,7 +1623,7 @@ void BattleGround::SpawnBGCreature(ObjectGuid guid, BattleGroundCreatureSpawnMod
         }
         else
         {
-            if (obj->GetRespawnTime() < time(nullptr))
+            if (obj->GetRespawnTime() < sWorld.GetGameTime())
                 obj->SetRespawnTime(1);
         }
     }

@@ -35,6 +35,13 @@ SniffFile::~SniffFile()
         fclose(m_file);
 }
 
+void SniffFile::Flush()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_file)
+        fflush(m_file);
+}
+
 void SniffFile::WriteHeader()
 {
     // Write header
@@ -50,6 +57,7 @@ void SniffFile::WriteHeader()
 
 void SniffFile::WritePacket(WorldPacket const& packet, bool isClientPacket, time_t timestamp)
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     uint8 direction = isClientPacket ? 0x00 : 0xff;
     fwrite(&direction, 1, 1, m_file);
     uint32 unixTime = timestamp;

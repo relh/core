@@ -73,8 +73,24 @@ void WorldSession::HandleGroupInviteOpcode(WorldPackets::Group::GroupInvite cons
         return;
     }
 
-    // Can't group with
-    if (!GetPlayer()->IsGameMaster() && !sWorld.getConfig(CONFIG_BOOL_ALLOW_TWO_SIDE_INTERACTION_GROUP) && GetPlayer()->GetTeam() != player->GetTeam())
+    // Guild Wars parties are coordination for guild allies, never a second truce.
+    if (!GetPlayer()->IsGameMaster() && sWorld.IsGuildWarsRealm() &&
+        !sWorld.AreGuildWarAllies(GetPlayer()->GetGuildId(), player->GetGuildId()))
+    {
+        SendPartyResult(PARTY_OP_INVITE, packet.memberName, ERR_PLAYER_WRONG_FACTION);
+        return;
+    }
+    // Guild members remain in cross-faction mode while drain preserves their
+    // guild and chat. Compare their native race teams so that mode cannot
+    // authorize a new mixed-faction party during rollback.
+    if (!GetPlayer()->IsGameMaster() && sWorld.IsGuildWarsDrainRealm() &&
+        GetPlayer()->GetTeamId() != player->GetTeamId())
+    {
+        SendPartyResult(PARTY_OP_INVITE, packet.memberName, ERR_PLAYER_WRONG_FACTION);
+        return;
+    }
+    if (!GetPlayer()->IsGameMaster() && !sWorld.IsGuildWarsRealm() &&
+        !sWorld.getConfig(CONFIG_BOOL_ALLOW_TWO_SIDE_INTERACTION_GROUP) && GetPlayer()->GetTeam() != player->GetTeam())
     {
         SendPartyResult(PARTY_OP_INVITE, packet.memberName, ERR_PLAYER_WRONG_FACTION);
         return;
@@ -163,11 +179,25 @@ void WorldSession::HandleGroupAcceptOpcode(NullClientPacket const& /*packet*/)
         return;
     }
 
-    // remove in from invites in any case
+    Player* leader = sObjectMgr.GetPlayer(group->GetLeaderGuid());
+
+    // remove from invites in any case
     group->RemoveInvite(GetPlayer());
 
     /** error handling **/
     /********************/
+
+    if (sWorld.IsGuildWarsRealm())
+    {
+        uint32 leaderGuildId = leader
+            ? leader->GetGuildId()
+            : Player::GetGuildIdFromDB(group->GetLeaderGuid());
+        if (!sWorld.AreGuildWarAllies(GetPlayer()->GetGuildId(), leaderGuildId))
+        {
+            SendPartyResult(PARTY_OP_INVITE, "", ERR_PLAYER_WRONG_FACTION);
+            return;
+        }
+    }
 
     // not have place
     if (group->IsFull())
@@ -175,8 +205,6 @@ void WorldSession::HandleGroupAcceptOpcode(NullClientPacket const& /*packet*/)
         SendPartyResult(PARTY_OP_INVITE, "", ERR_GROUP_FULL);
         return;
     }
-
-    Player* leader = sObjectMgr.GetPlayer(group->GetLeaderGuid());
 
     // forming a new group, create it
     if (!group->IsCreated())
@@ -351,9 +379,16 @@ void WorldSession::HandleLootMethodOpcode(WorldPackets::Group::LootMethod const&
         return;
     /********************/
 
+    if (packet.lootMethod == MASTER_LOOT && !group->IsMember(packet.lootMaster))
+        return;
+
+    ObjectGuid const lootMaster = packet.lootMethod == MASTER_LOOT
+        ? packet.lootMaster
+        : ObjectGuid();
+
     // everything is fine, do it
     group->SetLootMethod((LootMethod)packet.lootMethod);
-    group->SetLooterGuid(packet.lootMaster);
+    group->SetLooterGuid(lootMaster);
     group->SetLootThreshold((ItemQualities)packet.lootThreshold);
     group->SendUpdate();
 }
@@ -394,7 +429,7 @@ void WorldSession::HandleMinimapPingOpcode(WorldPackets::Group::MinimapPing cons
 void WorldSession::HandleRandomRollOpcode(WorldPackets::Group::RandomRoll const& packet)
 {
     /** error handling **/
-    if (packet.minimum > packet.maximum || packet.maximum > 10000) // < 32768 for urand call
+    if (packet.minimum > packet.maximum || packet.maximum > 1000000)
         return;
     /********************/
 

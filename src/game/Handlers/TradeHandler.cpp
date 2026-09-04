@@ -33,6 +33,7 @@
 #include "Map.h"
 #include "TradeData.h"
 #include "TransactionLog.h"
+#include "MarketStallMgr.h"
 
 void WorldSession::SendTradeStatus(TradeStatus status)
 {
@@ -248,14 +249,17 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPackets::Trade::AcceptTrade cons
     if (!my_trade)
         return;
 
-    double lastModificationTimeInMS = difftime(time(nullptr), my_trade->GetLastModificationTime()) * 1000;
+    if (!sMarketStallMgr.ValidateServiceAccept(_player))
+        return;
+
+    double lastModificationTimeInMS = difftime(sWorld.GetGameTime(), my_trade->GetLastModificationTime()) * 1000;
     if (lastModificationTimeInMS < my_trade->GetScamPreventionDelay()) // if we are not outside the delay period since last modification
     {
         SendTradeStatus(TRADE_STATUS_BACK_TO_TRADE);
         return;
     }
 
-    my_trade->SetLastModificationTime(time(nullptr)); // Update it
+    my_trade->SetLastModificationTime(sWorld.GetGameTime()); // Update it
 
     Player* trader = my_trade->GetTrader();
 
@@ -436,7 +440,7 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPackets::Trade::AcceptTrade cons
             trader->GetSession()->SendNotification(LANG_NOT_PARTNER_FREE_TRADE_SLOTS);
             my_trade->SetAccepted(false);
             his_trade->SetAccepted(false);
-            his_trade->SetLastModificationTime(time(nullptr));
+            his_trade->SetLastModificationTime(sWorld.GetGameTime());
             if (my_spell)
                 my_spell->Delete();
             if (his_spell)
@@ -451,7 +455,7 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPackets::Trade::AcceptTrade cons
             trader->GetSession()->SendNotification(LANG_NOT_FREE_TRADE_SLOTS);
             my_trade->SetAccepted(false);
             his_trade->SetAccepted(false);
-            his_trade->SetLastModificationTime(time(nullptr));
+            his_trade->SetLastModificationTime(sWorld.GetGameTime());
             if (my_spell)
                 my_spell->Delete();
             if (his_spell)
@@ -512,6 +516,8 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPackets::Trade::AcceptTrade cons
         if (his_spell)
             his_spell->prepare(std::move(his_targets));
 
+        sMarketStallMgr.OnTradeCompleted(_player);
+
         // cleanup
         clearAcceptTradeMode(my_trade, his_trade);
         delete _player->m_trade;
@@ -547,6 +553,7 @@ void WorldSession::HandleBeginTradeOpcode(NullClientPacket const& /*packet*/)
 
     my_trade->GetTrader()->GetSession()->SendTradeStatus(TRADE_STATUS_OPEN_WINDOW);
     SendTradeStatus(TRADE_STATUS_OPEN_WINDOW);
+    sMarketStallMgr.OnTradeWindowOpened(_player);
 }
 
 void WorldSession::SendCancelTrade(TradeStatus status)
@@ -665,6 +672,8 @@ void WorldSession::HandleInitiateTradeOpcode(WorldPackets::Trade::InitiateTrade 
 
 void WorldSession::HandleSetTradeGoldOpcode(WorldPackets::Trade::SetTradeGold const& packet)
 {
+    if (sMarketStallMgr.HandleTradeMoneyMutation(_player, packet.gold))
+        return;
     TradeData* my_trade = _player->GetTradeData();
     if (!my_trade || !my_trade->GetTrader())
         return;
@@ -676,8 +685,8 @@ void WorldSession::HandleSetTradeGoldOpcode(WorldPackets::Trade::SetTradeGold co
 
     // gold can be incorrect, but this is checked at trade finished.
     his_trade->SetAccepted(false);
-    his_trade->SetLastModificationTime(time(nullptr));
-    my_trade->SetLastModificationTime(time(nullptr));
+    his_trade->SetLastModificationTime(sWorld.GetGameTime());
+    my_trade->SetLastModificationTime(sWorld.GetGameTime());
     my_trade->SetMoney(packet.gold);
 }
 
@@ -696,6 +705,9 @@ void WorldSession::HandleSetTradeItemOpcode(WorldPackets::Trade::SetTradeItem co
         SendTradeStatus(TRADE_STATUS_TRADE_CANCELED);
         return;
     }
+
+    if (sMarketStallMgr.HandleTradeItemMutation(_player, packet.tradeSlot))
+        return;
 
     // check cheating, can't fail with correct client operations
     Item* item = _player->GetItemByPos(packet.bag, packet.slot);
@@ -721,9 +733,10 @@ void WorldSession::HandleSetTradeItemOpcode(WorldPackets::Trade::SetTradeItem co
     }
 
     his_trade->SetAccepted(false);
-    his_trade->SetLastModificationTime(time(nullptr));
-    my_trade->SetLastModificationTime(time(nullptr));
+    his_trade->SetLastModificationTime(sWorld.GetGameTime());
+    my_trade->SetLastModificationTime(sWorld.GetGameTime());
     my_trade->SetItem(TradeSlots(packet.tradeSlot), item);
+    sMarketStallMgr.OnTradeItemChanged(_player, packet.tradeSlot);
 }
 
 void WorldSession::HandleClearTradeItemOpcode(WorldPackets::Trade::ClearTradeItem const& packet)
@@ -738,9 +751,11 @@ void WorldSession::HandleClearTradeItemOpcode(WorldPackets::Trade::ClearTradeIte
     // invalid slot number
     if (packet.tradeSlot >= TRADE_SLOT_COUNT)
         return;
+    if (sMarketStallMgr.HandleTradeItemClear(_player, packet.tradeSlot))
+        return;
 
     his_trade->SetAccepted(false);
-    his_trade->SetLastModificationTime(time(nullptr));
-    my_trade->SetLastModificationTime(time(nullptr));
+    his_trade->SetLastModificationTime(sWorld.GetGameTime());
+    my_trade->SetLastModificationTime(sWorld.GetGameTime());
     my_trade->SetItem(TradeSlots(packet.tradeSlot), nullptr);
 }

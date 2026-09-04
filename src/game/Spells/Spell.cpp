@@ -52,6 +52,9 @@
 
 using namespace Spells;
 
+// Coworld schema-3 Godview discrete spell-event bridge.
+void CoworldRecordSpellEvent(Unit* caster, Spell const* spell, char const* phase);
+
 #define SPELL_CHANNEL_VISUAL_TIMER 800
 
 extern pEffect SpellEffects[TOTAL_SPELL_EFFECTS];
@@ -1116,7 +1119,7 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
     if (!unit)
         return;
 
-    if (getState() == SPELL_STATE_DELAYED && (WorldTimer::getMSTime() - target->timeDelay) <= unit->m_lastSanctuaryTime && !m_spellInfo->IsPositiveSpell())
+    if (getState() == SPELL_STATE_DELAYED && (sWorld.GetCurrentMSTime() - target->timeDelay) <= unit->m_lastSanctuaryTime && !m_spellInfo->IsPositiveSpell())
         return;
 
     // Get original caster (if exist) and calculate damage/healing from him data
@@ -4458,6 +4461,8 @@ void Spell::SendSpellStart()
     if (!IsNeedSendToClient())
         return;
 
+    CoworldRecordSpellEvent(m_casterUnit, this, "start");
+
     DEBUG_FILTER_LOG(LOG_FILTER_SPELL_CAST, "Sending SMSG_SPELL_START id=%u", m_spellInfo->Id);
 
     uint32 castFlags = CAST_FLAG_UNKNOWN2;
@@ -4498,6 +4503,8 @@ void Spell::SendSpellGo()
         SendAllTargetsMiss();
         return;
     }
+
+    CoworldRecordSpellEvent(m_casterUnit, this, "go");
 
     uint32 castFlags = CAST_FLAG_UNKNOWN9;
     if (m_spellInfo->IsRangedSpell())
@@ -6095,8 +6102,7 @@ SpellCastResult Spell::CheckCast(bool strict)
                 if (!target || target->GetOwnerGuid().IsPlayer())
                     return SPELL_FAILED_BAD_TARGETS;
 
-                if (!target->GetCreatureInfo()->pickpocket_loot_id &&
-                    !(target->GetCreatureTypeMask() & CREATURE_TYPEMASK_HUMANOID_OR_UNDEAD))
+                if (!target->GetCreatureInfo()->pickpocket_loot_id)
                     return SPELL_FAILED_TARGET_NO_POCKETS;
 
                 break;
