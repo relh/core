@@ -1293,7 +1293,16 @@ void Spell::EffectDummy(SpellEffectIndex effIdx)
                 {
                     if (unitTarget && m_casterUnit)
                     {
-                        m_casterUnit->Kill(unitTarget, nullptr);
+                        ObjectGuid const targetGuid = unitTarget->GetObjectGuid();
+                        m_casterUnit->m_Events.AddLambdaEventAtOffset(
+                            [caster = m_casterUnit, targetGuid]
+                            {
+                                if (!caster->IsInWorld())
+                                    return;
+                                if (Unit* target = caster->GetMap()->GetUnit(targetGuid))
+                                    if (target->IsAlive())
+                                        caster->Kill(target, nullptr);
+                            }, 500);
                     }
                     return;
                 }
@@ -4728,9 +4737,10 @@ void Spell::EffectStuck(SpellEffectIndex /*effIdx*/)
     if (pTarget->IsTaxiFlying())
         return;
 
-    // TP to last overmap position
-    if (fabs(pTarget->m_lastSafePosition.x) > 0.1f && fabs(pTarget->m_lastSafePosition.y) > 0.1f)
-        pTarget->TeleportTo(pTarget->GetMapId(), pTarget->m_lastSafePosition.x, pTarget->m_lastSafePosition.y, pTarget->m_lastSafePosition.z - 2.0f + 0.7f, pTarget->m_lastSafePosition.o);
+    // The stock client delegates effect 84 to the server. Return to
+    // the saved inn and start the normal Hearthstone cooldown instead
+    // of reusing a last-safe position that may still be obstructed.
+    pTarget->TeleportToHomebind(TELE_TO_SPELL);
 }
 
 void Spell::EffectSummonPlayer(SpellEffectIndex /*effIdx*/)

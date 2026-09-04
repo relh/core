@@ -98,10 +98,15 @@ void IO::Networking::AsyncSocket::Read(char* target, std::size_t size, std::func
     }
     else if (alreadyRead == -1)
     {
-        if (errno != EWOULDBLOCK)
+        int const readError = errno;
+        if (readError != EWOULDBLOCK)
         {
             m_atomicState.fetch_and(~SocketStateFlags::READ_PENDING_SET);
-            callback(IO::NetworkError(IO::NetworkError::ErrorType::InternalError, errno), 0);
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+            m_ctx->PostAfterCurrentEventBatch([callback]() {});
+#endif
+            StopPendingTransactionsAndForceClose();
+            callback(IO::NetworkError(IO::NetworkError::ErrorType::InternalError, readError), 0);
             return;
         }
         alreadyRead = 0; // Would block, so we need to queue it for later
@@ -166,10 +171,15 @@ void IO::Networking::AsyncSocket::ReadSome(char* target, std::size_t size, std::
     }
     else if (alreadyRead == -1)
     {
-        if (errno != EWOULDBLOCK)
+        int const readError = errno;
+        if (readError != EWOULDBLOCK)
         {
             m_atomicState.fetch_and(~SocketStateFlags::READ_PENDING_SET);
-            callback(IO::NetworkError(IO::NetworkError::ErrorType::InternalError, errno), 0);
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+            m_ctx->PostAfterCurrentEventBatch([callback]() {});
+#endif
+            StopPendingTransactionsAndForceClose();
+            callback(IO::NetworkError(IO::NetworkError::ErrorType::InternalError, readError), 0);
             return;
         }
         alreadyRead = 0; // Would block, so we need to queue it for later
@@ -228,10 +238,15 @@ void IO::Networking::AsyncSocket::Write(IO::ReadableBuffer const& source, std::f
     ssize_t alreadySent = ::send(m_descriptor.GetNativeSocket(), source.GetPtr(), source.GetSize(), 0);
     if (alreadySent == -1)
     {
-        if (errno != EWOULDBLOCK)
+        int const writeError = errno;
+        if (writeError != EWOULDBLOCK)
         {
             m_atomicState.fetch_and(~SocketStateFlags::WRITE_PENDING_SET);
-            callback(IO::NetworkError(IO::NetworkError::ErrorType::InternalError, errno));
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+            m_ctx->PostAfterCurrentEventBatch([callback]() {});
+#endif
+            StopPendingTransactionsAndForceClose();
+            callback(IO::NetworkError(IO::NetworkError::ErrorType::InternalError, writeError));
             return;
         }
         alreadySent = 0; // Would block, so we need to queue it for later
@@ -302,9 +317,14 @@ void IO::Networking::AsyncSocket::PerformNonBlockingRead()
     }
     if (newWrittenBytes < 0)
     {
-        // If ::recv() failed because the socket is "not ready" we simply use a higher log level
-        sLog.Out(LOG_NETWORK, errno == EWOULDBLOCK ? LOG_LVL_BASIC : LOG_LVL_ERROR, "[%s] ::recv on client failed: %s", GetRemoteIpString().c_str(), SystemErrorToString(errno).c_str());
+        // EWOULDBLOCK is a normal edge-triggered retry. A fatal read
+        // error must cancel the pending callback so its WorldSocket
+        // shared_ptr can unwind and release the native descriptor.
+        int const readError = errno;
+        sLog.Out(LOG_NETWORK, readError == EWOULDBLOCK ? LOG_LVL_BASIC : LOG_LVL_ERROR, "[%s] ::recv on client failed: %s", GetRemoteIpString().c_str(), SystemErrorToString(readError).c_str());
         m_atomicState.fetch_and(~SocketStateFlags::READ_PENDING_LOAD);
+        if (readError != EWOULDBLOCK)
+            StopPendingTransactionsAndForceClose();
         return;
     }
 
@@ -368,11 +388,14 @@ void IO::Networking::AsyncSocket::PerformNonBlockingWrite()
     }
     if (newSentBytes == -1)
     {
-        if (errno != EWOULDBLOCK)
+        int const writeError = errno;
+        if (writeError != EWOULDBLOCK)
         {
-            sLog.Out(LOG_NETWORK, LOG_LVL_ERROR, "[%s] ::send on client failed: %s", GetRemoteIpString().c_str(), SystemErrorToString(errno).c_str());
+            sLog.Out(LOG_NETWORK, LOG_LVL_ERROR, "[%s] ::send on client failed: %s", GetRemoteIpString().c_str(), SystemErrorToString(writeError).c_str());
         }
         m_atomicState.fetch_and(~SocketStateFlags::WRITE_PENDING_LOAD);
+        if (writeError != EWOULDBLOCK)
+            StopPendingTransactionsAndForceClose();
         return;
     }
 
@@ -406,6 +429,12 @@ void IO::Networking::AsyncSocket::PerformContextSwitch()
 
     if (state & SocketStateFlags::SHUTDOWN_PENDING)
     {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+        m_ctx->PostAfterCurrentEventBatch([this, tmpCallback]()
+        {
+            m_contextCallback = nullptr;
+        });
+#endif
         m_atomicState.fetch_and(~SocketStateFlags::CONTEXT_PENDING_LOAD);
         tmpCallback(IO::NetworkError(IO::NetworkError::ErrorType::SocketClosed));
         return; // The socket was closed, no transfers are allowed
@@ -450,6 +479,28 @@ void IO::Networking::AsyncSocket::StopPendingTransactionsAndForceClose()
         m_atomicState.fetch_and(~SocketStateFlags::READ_PRESENT);
         tmpReadCallback(IO::NetworkError(IO::NetworkError::ErrorType::SocketClosed), 0);
     }
+
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    // libc++ may leave a moved-from std::function non-empty. Keep its
+    // captured owner alive through the rest of this kqueue batch, then
+    // break the callback cycle only after no queued raw udata pointer
+    // from the batch can still be dispatched.
+    bool const contextEventPending = (state & SocketStateFlags::CONTEXT_PRESENT) != 0;
+    auto contextCallback = contextEventPending
+        ? std::function<void(IO::NetworkError)>() : m_contextCallback;
+    auto readCallback = m_readCallback;
+    auto writeCallback = m_writeCallback;
+    if (contextCallback || readCallback || writeCallback)
+    {
+        m_ctx->PostAfterCurrentEventBatch([this, contextCallback, readCallback, writeCallback]()
+        {
+            if (contextCallback)
+                m_contextCallback = nullptr;
+            m_readCallback = nullptr;
+            m_writeCallback = nullptr;
+        });
+    }
+#endif
 
     // Note: Don't even think about clearing CONTEXT_PRESENT here, since it's stored as a raw pointer in `m_contextSwitchQueue`
 }

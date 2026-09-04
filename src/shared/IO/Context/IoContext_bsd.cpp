@@ -52,7 +52,21 @@ void IO::IoContext::RunUntilShutdown()
             struct kevent const& event = events[i];
             ((SystemIoEventReceiver*)(event.udata))->OnIoEvent(event.filter);
         }
+
+        std::vector<std::function<void()>> afterBatch;
+        {
+            std::lock_guard<std::mutex> lock(m_afterEventBatchMutex);
+            afterBatch.swap(m_afterEventBatchCallbacks);
+        }
+        for (std::function<void()>& callback : afterBatch)
+            callback();
     }
+}
+
+void IO::IoContext::PostAfterCurrentEventBatch(std::function<void()> callback)
+{
+    std::lock_guard<std::mutex> lock(m_afterEventBatchMutex);
+    m_afterEventBatchCallbacks.emplace_back(std::move(callback));
 }
 
 bool IO::IoContext::IsRunning() const

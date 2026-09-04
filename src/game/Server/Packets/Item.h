@@ -245,7 +245,10 @@ namespace WorldPackets { namespace Item
     {
     public:
         ObjectGuid itemGuid;
-        uint8 reason = 0;
+        // 0 displays translated text, 1 displays untranslated text with
+        // a timer, and every other value closes the active item text.
+        uint8 reason = 2;
+        uint32 translationDelayMs = 0;
 
         explicit ReadItemFailed() : ServerPacket(SMSG_READ_ITEM_FAILED) {}
         void AppendBodyTo(ByteBuffer& buffer) const override;

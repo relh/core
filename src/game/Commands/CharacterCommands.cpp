@@ -637,6 +637,135 @@ bool ChatHandler::HandleReviveCommand(char* args)
     return true;
 }
 
+namespace
+{
+    uint32 CoworldRfcPartyMemberBit(char const* name)
+    {
+        std::string const playerName(name);
+        if (playerName == "Rfcwarrior") return 1 << 0;
+        if (playerName == "Rfcshaman") return 1 << 1;
+        if (playerName == "Rfcrogue") return 1 << 2;
+        if (playerName == "Rfchunter") return 1 << 3;
+        if (playerName == "Rfcwarlock") return 1 << 4;
+        return 0;
+    }
+}
+
+bool ChatHandler::HandleRfcWipeResetCommand(char* /*args*/)
+{
+    static uint32 const RfcMapId = 389;
+    static uint32 const RfcEntranceAreaTriggerId = 2230;
+    static uint32 const FullRfcPartyMask = (1 << 5) - 1;
+
+    Player* requester = m_session ? m_session->GetPlayer() : nullptr;
+    if (!requester || requester->GetMapId() != RfcMapId)
+    {
+        SendSysMessage("Coworld RFC reset is available only inside Ragefire Chasm.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    std::vector<Player*> members;
+    Group* group = requester->GetGroup();
+    if (!group)
+    {
+        if (std::string(requester->GetName()) != "Rfcsolo")
+        {
+            SendSysMessage("Coworld RFC reset rejected for this character.");
+            SetSentErrorMessage(true);
+            return false;
+        }
+        members.push_back(requester);
+    }
+    else
+    {
+        if (std::string(requester->GetName()) != "Rfcwarrior" ||
+            group->GetLeaderGuid() != requester->GetObjectGuid())
+        {
+            SendSysMessage("Only the RFC fixture tank may reset its wiped party.");
+            SetSentErrorMessage(true);
+            return false;
+        }
+
+        uint32 partyMask = 0;
+        for (GroupReference* ref = group->GetFirstMember(); ref != nullptr; ref = ref->next())
+        {
+            Player* member = ref->getSource();
+            if (!member || !member->GetSession())
+            {
+                SendSysMessage("All five RFC fixture clients must be online before reset.");
+                SetSentErrorMessage(true);
+                return false;
+            }
+            uint32 bit = CoworldRfcPartyMemberBit(member->GetName());
+            if (!bit || (partyMask & bit))
+            {
+                SendSysMessage("Coworld RFC reset rejected for this party roster.");
+                SetSentErrorMessage(true);
+                return false;
+            }
+            partyMask |= bit;
+            members.push_back(member);
+        }
+        if (members.size() != 5 || partyMask != FullRfcPartyMask)
+        {
+            SendSysMessage("Coworld RFC reset requires the exact five-character fixture.");
+            SetSentErrorMessage(true);
+            return false;
+        }
+    }
+
+    uint32 const instanceId = requester->GetInstanceId();
+    for (Player* member : members)
+    {
+        Corpse* corpse = member->GetCorpse();
+        bool const bodyInInstance =
+            member->GetMapId() == RfcMapId && member->GetInstanceId() == instanceId;
+        bool const corpseInInstance = corpse &&
+            corpse->GetMapId() == RfcMapId && corpse->GetInstanceId() == instanceId;
+        if (!bodyInInstance && !corpseInInstance)
+        {
+            SendSysMessage("Every RFC fixture member must belong to the same wiped instance.");
+            SetSentErrorMessage(true);
+            return false;
+        }
+        if (member->IsAlive())
+        {
+            SendSysMessage("Coworld RFC reset requires a complete wipe.");
+            SetSentErrorMessage(true);
+            return false;
+        }
+    }
+
+    AreaTriggerTeleport const* entrance =
+        sObjectMgr.GetAreaTriggerTeleport(RfcEntranceAreaTriggerId);
+    if (!entrance || entrance->destination.mapId != RfcMapId)
+    {
+        SendSysMessage("RFC entrance AreaTrigger 2230 is unavailable.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    for (Player* member : members)
+    {
+        member->ResurrectPlayer(1.0f);
+        member->SpawnCorpseBones();
+        if (!member->TeleportTo(entrance->destination))
+        {
+            PSendSysMessage("Coworld RFC reset could not teleport %s.", member->GetName());
+            SetSentErrorMessage(true);
+            return false;
+        }
+    }
+
+    PSendSysMessage("Coworld RFC reset restored %u fixture character(s) at the entrance.",
+        (uint32)members.size());
+    sLog.Out(LOG_BASIC, LOG_LVL_BASIC,
+        "Coworld RFC wipe reset: requester=%s instance=%u members=%u",
+        requester->GetName(), instanceId, (uint32)members.size());
+    return true;
+}
+
 bool ChatHandler::HandleExploreCheatCommand(char* args)
 {
     if (!*args)

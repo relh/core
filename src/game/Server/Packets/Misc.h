@@ -266,6 +266,26 @@ namespace WorldPackets { namespace Misc
         void ReadFromWorldPacket(WorldPacket& recv_data) override;
     };
 
+    class LookingForGroupQuery final : public ClientPacket
+    {
+    public:
+        uint32 packedEntry = 0;
+        uint32 queryValue = 0;
+
+        explicit LookingForGroupQuery() : ClientPacket(MSG_LOOKING_FOR_GROUP) {}
+        void ReadFromWorldPacket(WorldPacket& recv_data) override;
+    };
+
+    class SetLookingForGroup final : public ClientPacket
+    {
+    public:
+        uint32 slots[3] = {};
+        std::string comment;
+
+        explicit SetLookingForGroup() : ClientPacket(CMSG_SET_LOOKING_FOR_GROUP) {}
+        void ReadFromWorldPacket(WorldPacket& recv_data) override;
+    };
+
     class MeetingStoneJoin final : public ClientPacket
     {
     public:
@@ -586,10 +606,10 @@ namespace WorldPackets { namespace Misc
         int32 standing = 0;          // Reputation standing
     };
 
-    class SetFactionStanding final : public ServerPacket  // last check 2.4.0
+    class SetFactionStanding final : public ServerPacket  // checked 1.12.1
     {
     public:
-        std::vector<FactionStandingEntry> factionStandings;
+        FactionStandingEntry factionStanding;
 
         explicit SetFactionStanding() : ServerPacket(SMSG_SET_FACTION_STANDING) {}
         void AppendBodyTo(ByteBuffer& buffer) const override;
